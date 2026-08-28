@@ -1,0 +1,36 @@
+{
+  "name": "gdisc-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GDisC - Ultra-fast, lightweight real-time communication platform",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces --if-present",
+    "dev:server": "npm run dev --workspace=@gdisc/server",
+    "dev:client": "npm run dev --workspace=@gdisc/client",
+    "build": "npm run build --workspaces --if-present",
+    "build:client": "npm run build --workspace=@gdisc/client",
+    "build:server": "npm run build --workspace=@gdisc/server",
+    "build:windows": "cd apps/client && npx @tauri-apps/cli build",
+    "build:android": "cd apps/client && npx cap sync android && cd android && ./gradlew assembleDebug",
+    "test": "npm run test --workspaces --if-present",
+    "db:generate": "npm run db:generate --workspace=@gdisc/server",
+    "db:push": "npm run db:push --workspace=@gdisc/server",
+    "db:seed": "npm run db:seed --workspace=@gdisc/server",
+    "db:postgres": "prisma db push --schema=apps/server/prisma/schema.postgresql.prisma"
+  },
+  "keywords": [
+    "gdisc",
+    "webrtc",
+    "realtime",
+    "fastify",
+    "react",
+    "vite",
+    "voice-chat"
+  ],
+  "author": "GDisC Team",
+  "license": "MIT"
+}

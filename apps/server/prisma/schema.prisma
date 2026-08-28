@@ -1,0 +1,161 @@
+// GDisC Database Schema (Prisma ORM)
+// Configured for PostgreSQL (Vercel Postgres, Neon, Supabase, AWS RDS) & SQLite
+datasource db {
+  provider = "sqlite" // Change to "postgresql" when deploying to Vercel Postgres / Neon / Supabase
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum ChannelType {
+  TEXT
+  VOICE
+}
+
+enum UserStatus {
+  ONLINE
+  IDLE
+  DND
+  OFFLINE
+}
+
+model User {
+  id           String       @id @default(uuid())
+  email        String       @unique
+  username     String       @unique
+  displayName  String
+  passwordHash String
+  avatarUrl    String?
+  bio          String?
+  status       UserStatus   @default(OFFLINE)
+  customStatus String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  ownedServers   Server[]        @relation("ServerOwner")
+  memberships    ServerMember[]
+  messages       Message[]       @relation("MessageAuthor")
+  createdInvites Invite[]        @relation("InviteCreator")
+
+  @@index([username])
+  @@index([email])
+}
+
+model Server {
+  id          String   @id @default(uuid())
+  name        String
+  iconUrl     String?
+  description String?
+  ownerId     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner       User           @relation("ServerOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members     ServerMember[]
+  channels    Channel[]
+  roles       Role[]
+  invites     Invite[]
+
+  @@index([ownerId])
+}
+
+model ServerMember {
+  id       String   @id @default(uuid())
+  serverId String
+  userId   String
+  nickname String?
+  joinedAt DateTime @default(now())
+
+  server   Server       @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roles    MemberRole[]
+
+  @@unique([serverId, userId])
+  @@index([serverId])
+  @@index([userId])
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  serverId    String
+  name        String
+  color       String   @default("#6C63FF")
+  position    Int      @default(0)
+  permissions String   @default("0") // BigInt bitmask stored as string for precision
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  server      Server       @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  memberRoles MemberRole[]
+
+  @@index([serverId])
+  @@index([serverId, position])
+}
+
+model MemberRole {
+  id       String @id @default(uuid())
+  memberId String
+  roleId   String
+
+  member   ServerMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  role     Role         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([memberId, roleId])
+  @@index([memberId])
+  @@index([roleId])
+}
+
+model Channel {
+  id        String      @id @default(uuid())
+  serverId  String
+  name      String
+  type      ChannelType @default(TEXT)
+  topic     String?
+  position  Int         @default(0)
+  isPrivate Boolean     @default(false)
+  createdAt DateTime    @default(now())
+
+  server    Server      @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  messages  Message[]
+
+  @@index([serverId])
+  @@index([serverId, position])
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  channelId String
+  authorId  String
+  content   String
+  replyToId String?
+  isEdited  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  channel   Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author    User      @relation("MessageAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  replyTo   Message?  @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies   Message[] @relation("MessageReplies")
+
+  @@index([channelId, createdAt(sort: Desc)])
+  @@index([authorId])
+}
+
+model Invite {
+  id        String    @id @default(uuid())
+  code      String    @unique
+  serverId  String
+  creatorId String
+  maxUses   Int       @default(0) // 0 = unlimited
+  uses      Int       @default(0)
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+
+  server    Server    @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  creator   User      @relation("InviteCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+
+  @@index([code])
+  @@index([serverId])
+}
