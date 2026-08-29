@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, session, Tray, Menu, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, session, Tray, Menu, nativeImage, type NativeImage } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,37 @@ let tray: Tray | null = null;
 
 const isDev = process.env.NODE_ENV === 'development' && Boolean(process.env.DEV_SERVER_URL);
 const devServerUrl = process.env.DEV_SERVER_URL || 'http://localhost:5173';
+
+function resolveIconPath(): string | undefined {
+  const appDir = app.getAppPath();
+  const candidates = [
+    path.join(appDir, 'assets/icon.ico'),
+    path.join(appDir, 'assets/icon.png'),
+    path.resolve(__dirname, '../assets/icon.ico'),
+    path.resolve(__dirname, '../../assets/icon.ico'),
+    path.resolve(__dirname, '../../../apps/desktop/assets/icon.ico'),
+  ];
+
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return undefined;
+}
+
+function resolvePreloadPath(): string {
+  const appDir = app.getAppPath();
+  const candidates = [
+    path.join(appDir, 'dist/main/preload.cjs'),
+    path.join(appDir, 'dist/main/preload.js'),
+    path.resolve(__dirname, 'preload.cjs'),
+    path.resolve(__dirname, 'preload.js'),
+  ];
+
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return path.resolve(__dirname, 'preload.cjs');
+}
 
 function tryLoadLocalFiles(win: BrowserWindow) {
   const appDir = app.getAppPath();
@@ -40,25 +71,33 @@ function tryLoadLocalFiles(win: BrowserWindow) {
 }
 
 function createMainWindow(): BrowserWindow {
-  const preloadPath = path.resolve(__dirname, 'preload.js');
+  const preloadPath = resolvePreloadPath();
+  const iconPath = resolveIconPath();
+
+  console.log('Preload path resolved to:', preloadPath);
+  console.log('Icon path resolved to:', iconPath);
 
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    frame: false, // Frameless custom titlebar
+    frame: false, // Frameless modern titlebar
     backgroundColor: '#0B0D12',
-    show: false, // Show gracefully once ready-to-show
+    show: false,
     title: 'GDisC',
+    icon: iconPath,
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      webSecurity: false, // Allows seamless local file loading & WebRTC mesh P2P
+      webSecurity: false,
     },
   });
+
+  // Set desktop userAgent tag
+  win.webContents.setUserAgent(win.webContents.getUserAgent() + ' GDisC-Desktop/1.0.0');
 
   // Automatically grant permissions for WebRTC (Mic, Camera, Screen share)
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
@@ -97,12 +136,19 @@ function createMainWindow(): BrowserWindow {
 }
 
 function createTray() {
-  const icon = nativeImage.createFromBuffer(
-    Buffer.from(
-      'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAZElEQVR42mNk+M9QzwAFjAwM/1EwE24FjEh8kJr/aJgYjE2cEcX5j1OckYFhAIsCknE+yA5ihjGQ7kEWBzGIYgU4fYZiB5I4E37FhHwJMg+nQnwWIxNihg9jU8yIVYExmK0gAABHshf5WzN33AAAAABJRU5ErkJggg==',
-      'base64'
-    )
-  );
+  const iconPath = resolveIconPath();
+  let icon: NativeImage;
+
+  if (iconPath && fs.existsSync(iconPath)) {
+    icon = nativeImage.createFromPath(iconPath);
+  } else {
+    icon = nativeImage.createFromBuffer(
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAZElEQVR42mNk+M9QzwAFjAwM/1EwE24FjEh8kJr/aJgYjE2cEcX5j1OckYFhAIsCknE+yA5ihjGQ7kEWBzGIYgU4fYZiB5I4E37FhHwJMg+nQnwWIxNihg9jU8yIVYExmK0gAABHshf5WzN33AAAAABJRU5ErkJggg==',
+        'base64'
+      )
+    );
+  }
 
   tray = new Tray(icon);
   tray.setToolTip('GDisC - Comunicação em Tempo Real');

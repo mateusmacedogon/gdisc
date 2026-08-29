@@ -22,31 +22,38 @@ export const DesktopTitlebar: React.FC = () => {
   const { activeServer } = useServerStore();
   const { activeChannel } = useChannelStore();
 
-  const isElectron = typeof window !== 'undefined' && Boolean(window.electronAPI?.isElectron);
+  const isDesktop =
+    typeof window !== 'undefined' &&
+    (Boolean(window.electronAPI) ||
+      window.navigator.userAgent.includes('Electron') ||
+      window.navigator.userAgent.includes('GDisC-Desktop'));
 
   useEffect(() => {
-    if (!isElectron || !window.electronAPI) return;
+    if (!isDesktop) return;
 
-    window.electronAPI.isMaximized().then(setIsMaximized);
+    if (window.electronAPI?.isMaximized) {
+      window.electronAPI.isMaximized().then(setIsMaximized).catch(() => {});
+    }
 
-    const cleanup = window.electronAPI.onMaximizedChange((max) => {
-      setIsMaximized(max);
-    });
+    if (window.electronAPI?.onMaximizedChange) {
+      const cleanup = window.electronAPI.onMaximizedChange((max) => {
+        setIsMaximized(max);
+      });
+      return cleanup;
+    }
+  }, [isDesktop]);
 
-    return cleanup;
-  }, [isElectron]);
-
-  // If not running in Electron, do not render extra titlebar space
-  if (!isElectron) return null;
+  // If running in browser web, do not show native window titlebar
+  if (!isDesktop) return null;
 
   return (
     <header
-      style={{ WebkitAppRegion: 'drag' } as any}
-      className="h-8 w-full bg-gdisc-bg-primary border-b border-gdisc-bg-hover/30 flex items-center justify-between select-none z-50 shrink-0 text-xs text-gdisc-text-secondary"
+      style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      className="h-8 w-full bg-gdisc-bg-primary border-b border-gdisc-bg-hover/20 flex items-center justify-between select-none z-50 shrink-0 text-xs text-gdisc-text-secondary"
     >
-      {/* App Branding & Server Breadcrumb */}
-      <div className="flex items-center gap-2 px-3 min-w-0">
-        <div className="w-4 h-4 rounded-md bg-gdisc-brand-primary flex items-center justify-center text-white shrink-0">
+      {/* Left: App Branding & Server/Channel Context */}
+      <div className="flex items-center gap-2 px-3 min-w-0 pointer-events-none">
+        <div className="w-4 h-4 rounded-md bg-gradient-to-tr from-gdisc-brand-primary to-gdisc-brand-secondary flex items-center justify-center text-white shrink-0 shadow-sm">
           <Radio className="w-2.5 h-2.5" />
         </div>
         <span className="font-bold text-gdisc-text-primary tracking-wide text-[11px]">
@@ -65,32 +72,37 @@ export const DesktopTitlebar: React.FC = () => {
         {activeChannel && (
           <>
             <span className="text-gdisc-text-muted text-[10px]">/</span>
-            <span className="truncate text-[11px] text-gdisc-brand-secondary max-w-[120px]">
+            <span className="truncate text-[11px] text-gdisc-brand-secondary font-medium max-w-[120px]">
               #{activeChannel.name}
             </span>
           </>
         )}
       </div>
 
-      {/* Windows Window Control Buttons (Non-draggable) */}
+      {/* Center Drag Region Filler */}
+      <div className="flex-1 h-full" />
+
+      {/* Right: Windows Window Control Buttons */}
       <div
-        style={{ WebkitAppRegion: 'no-drag' } as any}
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         className="flex items-center h-full shrink-0"
       >
-        {/* Minimize */}
+        {/* Minimize Button */}
         <button
+          type="button"
           onClick={() => window.electronAPI?.minimize()}
           title="Minimizar"
-          className="h-full px-3.5 flex items-center justify-center text-gdisc-text-muted hover:text-gdisc-text-primary hover:bg-gdisc-bg-hover transition-colors"
+          className="h-full w-11 flex items-center justify-center text-gdisc-text-muted hover:text-gdisc-text-primary hover:bg-white/10 transition-colors"
         >
           <Minus className="w-3.5 h-3.5" />
         </button>
 
-        {/* Maximize / Restore */}
+        {/* Maximize / Restore Button */}
         <button
+          type="button"
           onClick={() => window.electronAPI?.maximize()}
           title={isMaximized ? 'Restaurar Tamanho' : 'Maximizar'}
-          className="h-full px-3.5 flex items-center justify-center text-gdisc-text-muted hover:text-gdisc-text-primary hover:bg-gdisc-bg-hover transition-colors"
+          className="h-full w-11 flex items-center justify-center text-gdisc-text-muted hover:text-gdisc-text-primary hover:bg-white/10 transition-colors"
         >
           {isMaximized ? (
             <Copy className="w-3 h-3 rotate-180" />
@@ -99,11 +111,12 @@ export const DesktopTitlebar: React.FC = () => {
           )}
         </button>
 
-        {/* Close */}
+        {/* Close Button */}
         <button
+          type="button"
           onClick={() => window.electronAPI?.close()}
           title="Fechar"
-          className="h-full px-4 flex items-center justify-center text-gdisc-text-muted hover:text-white hover:bg-gdisc-danger transition-colors"
+          className="h-full w-12 flex items-center justify-center text-gdisc-text-muted hover:text-white hover:bg-red-600 transition-colors"
         >
           <X className="w-3.5 h-3.5" />
         </button>

@@ -9,10 +9,11 @@
   "forceCodeSigning": false,
   "directories": {
     "output": "../../dist-desktop",
-    "buildResources": "build"
+    "buildResources": "assets"
   },
   "files": [
     "dist/**/*",
+    "assets/**/*",
     "package.json",
     {
       "from": "../client/dist",
@@ -39,6 +40,7 @@
         "arch": ["x64"]
       }
     ],
+    "icon": "assets/icon.ico",
     "signAndEditExecutable": false,
     "artifactName": "${productName}-${version}-${arch}.${ext}"
   }

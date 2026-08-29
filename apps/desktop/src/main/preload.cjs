@@ -20,8 +20,8 @@ const electronAPI = {
     return ipcRenderer.invoke('window-is-maximized');
   },
 
-  onMaximizedChange: (callback: (isMax: boolean) => void) => {
-    const handler = (_event: any, isMax: boolean) => callback(isMax);
+  onMaximizedChange: (callback) => {
+    const handler = (_event, isMax) => callback(isMax);
     ipcRenderer.on('window-maximized-state', handler);
 
     return () => {
@@ -33,5 +33,6 @@ const electronAPI = {
 try {
   contextBridge.exposeInMainWorld('electronAPI', electronAPI);
 } catch (e) {
-  (window as any).electronAPI = electronAPI;
+  // Fallback for direct window assignment if contextBridge not available
+  window.electronAPI = electronAPI;
 }

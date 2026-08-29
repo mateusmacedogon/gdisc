@@ -7,7 +7,7 @@
   "type": "module",
   "main": "dist/main/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e \"const fs=require('fs'); fs.mkdirSync('dist/main', {recursive:true}); fs.copyFileSync('src/main/preload.cjs', 'dist/main/preload.cjs');\"",
     "dev": "tsx watch src/main/index.ts",
     "start": "electron ."
   },
