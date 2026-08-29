@@ -5,6 +5,10 @@ node_modules/
 
 # Build outputs
 dist/
+dist-*/
+dist-desktop/
+dist-package/
+dist-electron/
 build/
 .cache/
 .vercel/

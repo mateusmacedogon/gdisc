@@ -1,6 +1,8 @@
 {
   "name": "@gdisc/desktop",
   "version": "1.0.0",
+  "description": "GDisC - Plataforma de Comunicação em Tempo Real",
+  "author": "GDisC Team",
   "private": true,
   "type": "module",
   "main": "dist/main/index.js",
@@ -14,7 +16,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.5",
-    "electron": "^34.2.0",
+    "electron": "34.5.8",
     "electron-builder": "^25.1.8",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3"

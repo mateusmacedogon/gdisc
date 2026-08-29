@@ -63,12 +63,14 @@ function createMainWindow(): BrowserWindow {
   if (isDev) {
     win.loadURL(devServerUrl);
   } else {
-    // In production build, load the client dist
-    const distPath = path.resolve(__dirname, '../../client/dist/index.html');
-    win.loadFile(distPath).catch(() => {
-      // Fallback if built directly into root dist
-      const rootDist = path.resolve(__dirname, '../../../dist/index.html');
-      win.loadFile(rootDist);
+    const appDir = app.getAppPath();
+    const clientPath = path.join(appDir, 'client/dist/index.html');
+    const fallbackPath = path.join(appDir, 'dist/index.html');
+
+    win.loadFile(clientPath).catch(() => {
+      win.loadFile(fallbackPath).catch((err) => {
+        console.error('Failed to load bundled UI:', err);
+      });
     });
   }
 
