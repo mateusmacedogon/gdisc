@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, session, Tray, Menu, nativeImage, type NativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, session, Tray, Menu, nativeImage, desktopCapturer, type NativeImage } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Enable Hardware Acceleration for WebRTC audio/video
+// Enable Hardware Acceleration for WebRTC audio/video and screen capture
 app.commandLine.appendSwitch('enable-features', 'WebRTCPeerConnectionWithContext,HardwareMediaKeyHandling');
 app.commandLine.appendSwitch('ignore-certificate-errors');
 
@@ -70,6 +70,44 @@ function tryLoadLocalFiles(win: BrowserWindow) {
   console.error('Could not find index.html in candidates:', candidatePaths);
 }
 
+function setupMediaHandlers() {
+  // Automatically grant permissions for WebRTC (Mic, Camera, Screen share)
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    const allowed = [
+      'media',
+      'camera',
+      'microphone',
+      'display-capture',
+      'screen',
+      'notifications',
+      'pointerLock',
+    ];
+    if (allowed.includes(permission)) {
+      callback(true);
+    } else {
+      callback(false);
+    }
+  });
+
+  // Enable native screen sharing / display media requests via desktopCapturer
+  session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+    desktopCapturer
+      .getSources({ types: ['screen', 'window'] })
+      .then((sources) => {
+        if (sources.length > 0) {
+          // Grant the primary entire screen source
+          callback({ video: sources[0] });
+        } else {
+          callback({});
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to get desktop capture sources for screen sharing:', err);
+        callback({});
+      });
+  });
+}
+
 function createMainWindow(): BrowserWindow {
   const preloadPath = resolvePreloadPath();
   const iconPath = resolveIconPath();
@@ -98,16 +136,6 @@ function createMainWindow(): BrowserWindow {
 
   // Set desktop userAgent tag
   win.webContents.setUserAgent(win.webContents.getUserAgent() + ' GDisC-Desktop/1.0.0');
-
-  // Automatically grant permissions for WebRTC (Mic, Camera, Screen share)
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    const allowed = ['media', 'camera', 'microphone', 'display-capture', 'notifications', 'pointerLock'];
-    if (allowed.includes(permission)) {
-      callback(true);
-    } else {
-      callback(false);
-    }
-  });
 
   // Window state notification handlers
   win.on('maximize', () => {
@@ -214,6 +242,7 @@ function setupIpcHandlers() {
 
 // App lifecycle
 app.whenReady().then(() => {
+  setupMediaHandlers();
   setupIpcHandlers();
   mainWindow = createMainWindow();
   createTray();

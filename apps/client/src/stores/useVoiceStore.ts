@@ -209,6 +209,8 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
             selfScreen: true,
           });
         }
+      } else {
+        throw new Error('Compartilhamento de tela cancelado ou não autorizado.');
       }
     }
   },
