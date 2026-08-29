@@ -5,6 +5,7 @@ try {
   const source = path.resolve('dist');
   const target = path.resolve('../../dist');
   if (fs.existsSync(source)) {
+    fs.rmSync(target, { recursive: true, force: true });
     fs.cpSync(source, target, { recursive: true, force: true });
     console.log('✅ Dist sincronizado para raiz e apps/client/dist');
   }

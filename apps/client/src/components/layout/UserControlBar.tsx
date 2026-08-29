@@ -31,8 +31,12 @@ export const UserControlBar: React.FC = () => {
   return (
     <div className="relative h-14 bg-gdisc-bg-primary/95 border-t border-gdisc-bg-hover/40 px-2.5 flex items-center justify-between select-none">
       {/* User Info & Status Trigger */}
-      <div
+      <button
+        type="button"
         onClick={() => setShowStatusMenu(!showStatusMenu)}
+        aria-label="Alterar status de presença"
+        aria-haspopup="menu"
+        aria-expanded={showStatusMenu}
         className="flex items-center gap-2 p-1.5 rounded-xl hover:bg-gdisc-bg-card/70 cursor-pointer min-w-0 flex-1 mr-1 transition-colors"
       >
         <Avatar
@@ -50,12 +54,15 @@ export const UserControlBar: React.FC = () => {
             @{user.username}
           </div>
         </div>
-      </div>
+      </button>
 
       {/* Control Buttons (Mute, Deafen, Settings) */}
       <div className="flex items-center gap-0.5">
         <button
+          type="button"
           onClick={toggleMute}
+          aria-label={isMuted ? 'Ativar microfone' : 'Desativar microfone'}
+          aria-pressed={isMuted}
           title={isMuted ? 'Desmutar Microfone' : 'Mutar Microfone'}
           className={`p-2 rounded-lg transition-colors ${
             isMuted
@@ -67,7 +74,10 @@ export const UserControlBar: React.FC = () => {
         </button>
 
         <button
+          type="button"
           onClick={toggleDeaf}
+          aria-label={isDeafened ? 'Voltar a ouvir a chamada' : 'Silenciar áudio da chamada'}
+          aria-pressed={isDeafened}
           title={isDeafened ? 'Desensurdecer' : 'Ensurdecer'}
           className={`p-2 rounded-lg transition-colors ${
             isDeafened
@@ -79,7 +89,9 @@ export const UserControlBar: React.FC = () => {
         </button>
 
         <button
+          type="button"
           onClick={() => openModal('user_settings')}
+          aria-label="Abrir configurações do usuário"
           title="Configurações do Usuário"
           className="p-2 rounded-lg text-gdisc-text-secondary hover:text-gdisc-text-primary hover:bg-gdisc-bg-hover transition-colors"
         >
@@ -94,13 +106,16 @@ export const UserControlBar: React.FC = () => {
             onClick={() => setShowStatusMenu(false)}
             className="fixed inset-0 z-30"
           />
-          <div className="absolute bottom-16 left-2 z-40 w-48 bg-gdisc-bg-card border border-gdisc-bg-hover rounded-xl shadow-2xl p-1.5 animate-scale-in">
+          <div role="menu" aria-label="Status de presença" className="absolute bottom-16 left-2 z-40 w-48 bg-gdisc-bg-card border border-gdisc-bg-hover rounded-xl shadow-2xl p-1.5 animate-scale-in">
             <div className="px-2.5 py-1 text-[10px] font-semibold text-gdisc-text-muted uppercase tracking-wider">
               Definir Presença
             </div>
             {statuses.map((s) => (
               <button
                 key={s.value}
+                type="button"
+                role="menuitemradio"
+                aria-checked={user.status === s.value}
                 onClick={() => {
                   setStatus(s.value);
                   setShowStatusMenu(false);
@@ -119,6 +134,8 @@ export const UserControlBar: React.FC = () => {
             <div className="my-1 border-t border-gdisc-bg-hover" />
 
             <button
+              type="button"
+              role="menuitem"
               onClick={() => {
                 setShowStatusMenu(false);
                 logout();

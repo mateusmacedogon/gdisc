@@ -1,0 +1,22 @@
+{
+  "name": "@gdisc/desktop",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/main/index.ts",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@gdisc/shared": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "electron": "^34.2.0",
+    "electron-builder": "^25.1.8",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  }
+}

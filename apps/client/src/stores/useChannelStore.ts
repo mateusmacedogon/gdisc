@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api } from '../services/api.js';
 import { useChatStore } from './useChatStore.js';
+import { wsClient } from '../services/ws.js';
 import type { ChannelSummary, CreateChannelDTO, UpdateChannelDTO } from '@gdisc/shared';
 
 interface ChannelState {
@@ -80,6 +81,7 @@ export const useChannelStore = create<ChannelState>((set, get) => ({
     if (channel.type === 'TEXT') {
       useChatStore.getState().fetchMessages(channel.id);
     }
+    wsClient.registerChannel(channel.id, serverId);
     return channel;
   },
 
@@ -96,6 +98,7 @@ export const useChannelStore = create<ChannelState>((set, get) => ({
 
   deleteChannel: async (serverId: string, channelId: string) => {
     await api.delete(`/servers/${serverId}/channels/${channelId}`);
+    wsClient.unregisterChannel(channelId);
     set((state) => {
       const remaining = state.channels.filter((c) => c.id !== channelId);
       const nextActive = remaining.find((c) => c.type === 'TEXT') || remaining[0] || null;

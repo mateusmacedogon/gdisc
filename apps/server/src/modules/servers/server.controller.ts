@@ -2,7 +2,8 @@ import type { FastifyRequest, FastifyReply } from 'fastify';
 import { serverService } from './server.service.js';
 import { createServerSchema, updateServerSchema } from './server.schema.js';
 import { requirePermission } from '../../security/permissions.js';
-import { PermissionFlags } from '@gdisc/shared';
+import { PermissionFlags, WSEvents } from '@gdisc/shared';
+import { connectionManager } from '../../realtime/connectionManager.js';
 
 export class ServerController {
   async createServer(request: FastifyRequest, reply: FastifyReply) {
@@ -96,6 +97,28 @@ export class ServerController {
       return reply.status(400).send({
         error: 'Leave Server Error',
         message: error.message || 'Erro ao sair do servidor',
+      });
+    }
+  }
+
+  async kickMember(request: FastifyRequest, reply: FastifyReply) {
+    const { id: serverId, memberId } = request.params as { id: string; memberId: string };
+    const requesterId = request.user.userId;
+
+    try {
+      await requirePermission(serverId, requesterId, PermissionFlags.KICK_MEMBERS);
+      const removedUserId = await serverService.kickMember(serverId, memberId, requesterId);
+
+      void connectionManager.broadcastToServer(serverId, {
+        event: WSEvents.SERVER_MEMBER_LEFT,
+        data: { serverId, userId: removedUserId, kicked: true, refresh: true },
+      });
+
+      return reply.send({ success: true, userId: removedUserId });
+    } catch (error: any) {
+      return reply.status(403).send({
+        error: 'Forbidden',
+        message: error.message || 'Não foi possível expulsar o membro.',
       });
     }
   }

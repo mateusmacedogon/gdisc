@@ -15,7 +15,7 @@
         "title": "GDisC",
         "width": 1280,
         "height": 800,
-        "minWidth": 800,
+        "minWidth": 360,
         "minHeight": 600,
         "center": true,
         "resizable": true,
@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' http: https: ws: wss: data: blob: 'unsafe-inline' 'unsafe-eval'"
+      "csp": "default-src 'self'; connect-src 'self' https://kyzvtsvoqrmyahqmdrhf.supabase.co wss://kyzvtsvoqrmyahqmdrhf.supabase.co; img-src 'self' data: blob: https:; media-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self'; font-src 'self' data: https://fonts.gstatic.com"
     }
   },
   "bundle": {

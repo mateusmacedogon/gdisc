@@ -27,7 +27,9 @@ test('Authorization - Bitwise Permissions System', () => {
   // Test Administrator Bypass
   const adminPerms = PermissionFlags.ADMINISTRATOR;
   assert.equal(hasPermission(adminPerms, PermissionFlags.MANAGE_SERVER), true);
+  assert.equal(hasPermission(adminPerms, PermissionFlags.KICK_MEMBERS), true);
   assert.equal(hasPermission(adminPerms, PermissionFlags.BAN_MEMBERS), true);
+  assert.equal(hasPermission(adminPerms, PermissionFlags.MANAGE_MESSAGES), true);
   assert.equal(hasPermission(adminPerms, PermissionFlags.SCREEN_SHARE), true);
 
   // Test Combined Roles

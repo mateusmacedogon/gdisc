@@ -65,10 +65,10 @@ export const VoiceRoom: React.FC = () => {
   // Dynamic grid column class based on participant count
   const getGridClass = (count: number) => {
     if (count <= 1) return 'grid-cols-1 max-w-2xl max-h-[540px]';
-    if (count === 2) return 'grid-cols-1 md:grid-cols-2 max-w-4xl';
-    if (count <= 4) return 'grid-cols-2 max-w-5xl';
-    if (count <= 6) return 'grid-cols-2 md:grid-cols-3 max-w-6xl';
-    return 'grid-cols-3 md:grid-cols-4 max-w-7xl';
+    if (count === 2) return 'grid-cols-1 sm:grid-cols-2 max-w-4xl';
+    if (count <= 4) return 'grid-cols-1 sm:grid-cols-2 max-w-5xl';
+    if (count <= 6) return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 max-w-6xl';
+    return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 max-w-7xl';
   };
 
   return (
@@ -93,7 +93,7 @@ export const VoiceRoom: React.FC = () => {
       </div>
 
       {/* Main Call View Area */}
-      <div className="flex-1 overflow-y-auto p-4 flex items-center justify-center">
+      <div className="flex-1 overflow-y-auto p-2 flex items-center justify-center sm:p-4">
         {screenSharer ? (
           /* Spotlight Layout when screen is being shared */
           <div className="w-full h-full flex flex-col md:flex-row gap-4 max-w-7xl">
@@ -108,6 +108,7 @@ export const VoiceRoom: React.FC = () => {
                     : remoteStreams.get(screenSharer.userId)
                 }
                 isScreenShareSpotlight={true}
+                muteAudio={isDeafened}
               />
             </div>
 
@@ -125,6 +126,7 @@ export const VoiceRoom: React.FC = () => {
                         participant={p}
                         isLocal={isLocal}
                         mediaStream={stream}
+                        muteAudio={isDeafened}
                       />
                     </div>
                   );
@@ -134,7 +136,7 @@ export const VoiceRoom: React.FC = () => {
         ) : (
           /* Dynamic Grid Layout */
           <div
-            className={`w-full h-full grid gap-4 items-center justify-center p-2 ${getGridClass(
+            className={`w-full h-full grid gap-3 items-center justify-center sm:gap-4 sm:p-2 ${getGridClass(
               allParticipants.length
             )}`}
           >
@@ -143,11 +145,12 @@ export const VoiceRoom: React.FC = () => {
               const stream = isLocal ? localStream : remoteStreams.get(p.userId);
 
               return (
-                <div key={p.userId} className="w-full h-full min-h-[220px] aspect-video">
+                <div key={p.userId} className="w-full h-full min-h-[200px] aspect-video sm:min-h-[220px]">
                   <ParticipantTile
                     participant={p}
                     isLocal={isLocal}
                     mediaStream={stream}
+                    muteAudio={isDeafened}
                   />
                 </div>
               );

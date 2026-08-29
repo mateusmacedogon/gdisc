@@ -5,7 +5,7 @@ import { Plus, Compass, Radio } from 'lucide-react';
 
 export const ServerSidebar: React.FC = () => {
   const { servers, activeServerId, selectServer } = useServerStore();
-  const { openModal } = useUIStore();
+  const { openModal, closeMobileSidebar } = useUIStore();
 
   const getInitials = (name: string) => {
     return name
@@ -17,8 +17,21 @@ export const ServerSidebar: React.FC = () => {
       .toUpperCase();
   };
 
+  const handleSelectServer = (serverId: string | null) => {
+    selectServer(serverId);
+    closeMobileSidebar();
+  };
+
+  const handleOpenModal = (type: 'create_server' | 'join_invite') => {
+    closeMobileSidebar();
+    openModal(type);
+  };
+
   return (
-    <aside className="w-[72px] h-full bg-gdisc-bg-primary flex flex-col items-center py-3 select-none shrink-0 border-r border-gdisc-bg-hover/30 overflow-y-auto">
+    <aside
+      aria-label="Servidores"
+      className="w-[72px] h-full min-h-0 bg-gdisc-bg-primary flex flex-col items-center py-3 select-none shrink-0 border-r border-gdisc-bg-hover/30 overflow-y-auto overflow-x-hidden"
+    >
       {/* GDisC Brand Home Button */}
       <div className="relative group mb-2 flex items-center justify-center">
         {/* Active Pill indicator */}
@@ -28,8 +41,11 @@ export const ServerSidebar: React.FC = () => {
           }`}
         />
         <button
-          onClick={() => selectServer(null)}
+          type="button"
+          onClick={() => handleSelectServer(null)}
           title="Início & Mensagens Diretas"
+          aria-label="Início e mensagens diretas"
+          aria-current={activeServerId === null ? 'page' : undefined}
           className={`w-12 h-12 rounded-3xl group-hover:rounded-2xl transition-all duration-200 flex items-center justify-center ${
             activeServerId === null
               ? 'bg-gdisc-brand-primary text-white rounded-2xl shadow-gdisc-glow'
@@ -58,8 +74,11 @@ export const ServerSidebar: React.FC = () => {
               />
 
               <button
-                onClick={() => selectServer(server.id)}
+                type="button"
+                onClick={() => handleSelectServer(server.id)}
                 title={server.name}
+                aria-label={`Abrir servidor ${server.name}`}
+                aria-current={isActive ? 'page' : undefined}
                 className={`w-12 h-12 transition-all duration-200 flex items-center justify-center overflow-hidden font-bold text-sm ${
                   isActive
                     ? 'rounded-2xl bg-gdisc-brand-primary text-white shadow-gdisc-glow'
@@ -83,8 +102,10 @@ export const ServerSidebar: React.FC = () => {
         {/* Add Server Button */}
         <div className="relative group mt-1">
           <button
-            onClick={() => openModal('create_server')}
+            type="button"
+            onClick={() => handleOpenModal('create_server')}
             title="Criar um Servidor"
+            aria-label="Criar um servidor"
             className="w-12 h-12 rounded-3xl hover:rounded-2xl bg-gdisc-bg-card hover:bg-gdisc-success text-gdisc-success hover:text-white flex items-center justify-center transition-all duration-200 group-hover:shadow-lg"
           >
             <Plus className="w-6 h-6" />
@@ -94,8 +115,10 @@ export const ServerSidebar: React.FC = () => {
         {/* Join Server by Invite Button */}
         <div className="relative group">
           <button
-            onClick={() => openModal('join_invite')}
+            type="button"
+            onClick={() => handleOpenModal('join_invite')}
             title="Entrar com Código de Convite"
+            aria-label="Entrar em um servidor com código de convite"
             className="w-12 h-12 rounded-3xl hover:rounded-2xl bg-gdisc-bg-card hover:bg-gdisc-brand-secondary text-gdisc-brand-secondary hover:text-white flex items-center justify-center transition-all duration-200"
           >
             <Compass className="w-5 h-5" />

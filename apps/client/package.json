@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && node scripts/copy-dist.js",
+    "build": "npm run build --workspace=@gdisc/shared && tsc && vite build && node scripts/copy-dist.js",
     "preview": "vite preview"
   },
   "dependencies": {
     "@gdisc/shared": "*",
+    "@supabase/supabase-js": "2.112.4",
     "clsx": "^2.1.1",
     "lucide-react": "^1.16.0",
     "react": "^19.0.0",

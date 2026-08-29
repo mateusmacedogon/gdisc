@@ -87,7 +87,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   deleteMessage: async (messageId: string) => {
     try {
-      await api.delete(`/messages/${messageId}`);
+      const { channelId } = await api.delete<{ channelId: string }>(`/messages/${messageId}`);
+      get().removeRealtimeMessage(messageId, channelId);
     } catch (err) {
       console.error('Failed to delete message:', err);
       throw err;

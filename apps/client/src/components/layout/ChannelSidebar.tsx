@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useServerStore } from '../../stores/useServerStore.js';
 import { useChannelStore } from '../../stores/useChannelStore.js';
 import { useVoiceStore } from '../../stores/useVoiceStore.js';
@@ -18,6 +18,8 @@ import {
   MicOff,
   Video,
   Monitor,
+  X,
+  Loader2,
 } from 'lucide-react';
 import type { ChannelSummary } from '@gdisc/shared';
 
@@ -30,34 +32,92 @@ export const ChannelSidebar: React.FC = () => {
     joinVoice,
     leaveVoice,
   } = useVoiceStore();
-  const { openModal } = useUIStore();
+  const { openModal, closeMobileSidebar, addToast } = useUIStore();
   const { user } = useAuthStore();
 
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [joiningChannelId, setJoiningChannelId] = useState<string | null>(null);
+  const [isServerActionPending, setIsServerActionPending] = useState(false);
 
   const textChannels = channels.filter((c) => c.type === 'TEXT');
   const voiceChannels = channels.filter((c) => c.type === 'VOICE');
 
   const isOwner = activeServer && user && activeServer.ownerId === user.id;
 
-  const handleVoiceChannelClick = (channel: ChannelSummary) => {
+  useEffect(() => {
+    setIsMenuOpen(false);
+  }, [activeServer?.id]);
+
+  const handleVoiceChannelClick = async (channel: ChannelSummary) => {
     if (!activeServer) return;
     if (activeVoiceChannelId === channel.id) {
       // Already in this channel, select it to view the call
       selectChannel(channel.id);
     } else {
-      joinVoice(channel.id, activeServer.id);
-      selectChannel(channel.id);
+      if (joiningChannelId) return;
+      setJoiningChannelId(channel.id);
+      closeMobileSidebar();
+      try {
+        await joinVoice(channel.id, activeServer.id);
+        selectChannel(channel.id);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Não foi possível entrar na call.';
+        addToast(message, 'error');
+        const fallbackChannel = textChannels[0];
+        selectChannel(fallbackChannel?.id ?? null);
+      } finally {
+        setJoiningChannelId(null);
+      }
+    }
+    closeMobileSidebar();
+  };
+
+  const handleDeleteServer = async () => {
+    if (!activeServer || !confirm('Tem certeza que deseja excluir este servidor permanentemente?')) return;
+    setIsServerActionPending(true);
+    try {
+      await deleteServer(activeServer.id);
+      closeMobileSidebar();
+      addToast('Servidor excluído.', 'success');
+    } catch (error) {
+      addToast(error instanceof Error ? error.message : 'Não foi possível excluir o servidor.', 'error');
+    } finally {
+      setIsServerActionPending(false);
     }
   };
 
+  const handleLeaveServer = async () => {
+    if (!activeServer || !confirm('Deseja realmente sair deste servidor?')) return;
+    setIsServerActionPending(true);
+    try {
+      await leaveServer(activeServer.id);
+      closeMobileSidebar();
+      addToast('Você saiu do servidor.', 'success');
+    } catch (error) {
+      addToast(error instanceof Error ? error.message : 'Não foi possível sair do servidor.', 'error');
+    } finally {
+      setIsServerActionPending(false);
+    }
+  };
+
+  const handleTextChannelClick = (channelId: string) => {
+    selectChannel(channelId);
+    closeMobileSidebar();
+  };
+
   return (
-    <div className="w-60 h-full bg-gdisc-bg-secondary flex flex-col select-none shrink-0 border-r border-gdisc-bg-hover/30 relative">
+    <aside
+      aria-label="Canais do servidor"
+      className="gdisc-mobile-navigation min-w-0 w-full h-full bg-gdisc-bg-secondary flex flex-1 flex-col select-none border-r border-gdisc-bg-hover/30 relative md:w-60 md:flex-none"
+    >
       {/* Server Header Dropdown */}
-      <div className="relative border-b border-gdisc-bg-hover/60">
+      <div className="relative flex h-12 shrink-0 border-b border-gdisc-bg-hover/60">
         <button
+          type="button"
           onClick={() => setIsMenuOpen(!isMenuOpen)}
-          className="w-full h-12 px-4 flex items-center justify-between font-bold text-sm text-gdisc-text-primary hover:bg-gdisc-bg-hover/50 transition-colors"
+          aria-expanded={isMenuOpen}
+          aria-haspopup="menu"
+          className="min-w-0 h-full px-4 flex flex-1 items-center justify-between font-bold text-sm text-gdisc-text-primary hover:bg-gdisc-bg-hover/50 transition-colors"
         >
           <span className="truncate">{activeServer ? activeServer.name : 'GDisC'}</span>
           <ChevronDown
@@ -67,17 +127,34 @@ export const ChannelSidebar: React.FC = () => {
           />
         </button>
 
+        <button
+          type="button"
+          onClick={closeMobileSidebar}
+          aria-label="Fechar navegação"
+          title="Fechar navegação"
+          className="flex min-h-11 min-w-11 items-center justify-center text-gdisc-text-muted hover:bg-gdisc-bg-hover hover:text-gdisc-text-primary md:hidden"
+        >
+          <X className="h-5 w-5" />
+        </button>
+
         {/* Server Context Menu */}
         {isMenuOpen && activeServer && (
           <>
             <div
               onClick={() => setIsMenuOpen(false)}
+              aria-hidden="true"
               className="fixed inset-0 z-30"
             />
-            <div className="absolute top-13 left-2 right-2 z-40 bg-gdisc-bg-card border border-gdisc-bg-hover rounded-xl shadow-2xl p-1.5 animate-scale-in">
+            <div
+              role="menu"
+              className="absolute top-12 left-2 right-2 z-40 bg-gdisc-bg-card border border-gdisc-bg-hover rounded-xl shadow-2xl p-1.5 animate-scale-in"
+            >
               <button
+                type="button"
+                role="menuitem"
                 onClick={() => {
                   setIsMenuOpen(false);
+                  closeMobileSidebar();
                   openModal('invite', { serverId: activeServer.id });
                 }}
                 className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-gdisc-brand-secondary hover:bg-gdisc-brand-primary hover:text-white rounded-lg transition-colors"
@@ -87,8 +164,11 @@ export const ChannelSidebar: React.FC = () => {
               </button>
 
               <button
+                type="button"
+                role="menuitem"
                 onClick={() => {
                   setIsMenuOpen(false);
+                  closeMobileSidebar();
                   openModal('server_settings', { serverId: activeServer.id });
                 }}
                 className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gdisc-text-secondary hover:bg-gdisc-bg-hover hover:text-gdisc-text-primary rounded-lg transition-colors"
@@ -98,8 +178,11 @@ export const ChannelSidebar: React.FC = () => {
               </button>
 
               <button
+                type="button"
+                role="menuitem"
                 onClick={() => {
                   setIsMenuOpen(false);
+                  closeMobileSidebar();
                   openModal('channel_settings', { serverId: activeServer.id });
                 }}
                 className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gdisc-text-secondary hover:bg-gdisc-bg-hover hover:text-gdisc-text-primary rounded-lg transition-colors"
@@ -112,26 +195,28 @@ export const ChannelSidebar: React.FC = () => {
 
               {isOwner ? (
                 <button
+                  type="button"
+                  role="menuitem"
                   onClick={() => {
                     setIsMenuOpen(false);
-                    if (confirm('Tem certeza que deseja excluir este servidor permanentemente?')) {
-                      deleteServer(activeServer.id);
-                    }
+                    void handleDeleteServer();
                   }}
-                  className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gdisc-danger hover:bg-gdisc-danger/10 rounded-lg transition-colors"
+                  disabled={isServerActionPending}
+                  className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gdisc-danger hover:bg-gdisc-danger/10 rounded-lg transition-colors disabled:opacity-50"
                 >
                   <span>Excluir Servidor</span>
                   <LogOut className="w-4 h-4" />
                 </button>
               ) : (
                 <button
+                  type="button"
+                  role="menuitem"
                   onClick={() => {
                     setIsMenuOpen(false);
-                    if (confirm('Deseja realmente sair deste servidor?')) {
-                      leaveServer(activeServer.id);
-                    }
+                    void handleLeaveServer();
                   }}
-                  className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gdisc-danger hover:bg-gdisc-danger/10 rounded-lg transition-colors"
+                  disabled={isServerActionPending}
+                  className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gdisc-danger hover:bg-gdisc-danger/10 rounded-lg transition-colors disabled:opacity-50"
                 >
                   <span>Sair do Servidor</span>
                   <LogOut className="w-4 h-4" />
@@ -150,10 +235,13 @@ export const ChannelSidebar: React.FC = () => {
             <span>Canais de Texto</span>
             {activeServer && (
               <button
-                onClick={() =>
+                type="button"
+                onClick={() => {
+                  closeMobileSidebar();
                   openModal('channel_settings', { serverId: activeServer.id, initialType: 'TEXT' })
-                }
+                }}
                 title="Criar canal de texto"
+                aria-label="Criar canal de texto"
                 className="hover:text-gdisc-text-primary p-0.5 rounded transition-colors"
               >
                 <Plus className="w-3.5 h-3.5" />
@@ -168,7 +256,9 @@ export const ChannelSidebar: React.FC = () => {
               return (
                 <button
                   key={channel.id}
-                  onClick={() => selectChannel(channel.id)}
+                  type="button"
+                  onClick={() => handleTextChannelClick(channel.id)}
+                  aria-current={isActive ? 'page' : undefined}
                   className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm transition-all group ${
                     isActive
                       ? 'bg-gdisc-bg-card font-semibold text-gdisc-text-primary shadow-sm'
@@ -189,10 +279,13 @@ export const ChannelSidebar: React.FC = () => {
             <span>Canais de Voz</span>
             {activeServer && (
               <button
-                onClick={() =>
+                type="button"
+                onClick={() => {
+                  closeMobileSidebar();
                   openModal('channel_settings', { serverId: activeServer.id, initialType: 'VOICE' })
-                }
+                }}
                 title="Criar canal de voz"
+                aria-label="Criar canal de voz"
                 className="hover:text-gdisc-text-primary p-0.5 rounded transition-colors"
               >
                 <Plus className="w-3.5 h-3.5" />
@@ -208,15 +301,22 @@ export const ChannelSidebar: React.FC = () => {
               return (
                 <div key={channel.id} className="space-y-0.5">
                   <button
-                    onClick={() => handleVoiceChannelClick(channel)}
-                    className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-sm transition-all group ${
+                    type="button"
+                    onClick={() => void handleVoiceChannelClick(channel)}
+                    disabled={joiningChannelId !== null}
+                    aria-current={isInThisVoice ? 'page' : undefined}
+                    className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-sm transition-all group disabled:cursor-wait disabled:opacity-60 ${
                       isInThisVoice
                         ? 'bg-gdisc-brand-primary/15 text-gdisc-brand-secondary font-semibold'
                         : 'text-gdisc-text-secondary hover:bg-gdisc-bg-hover/60 hover:text-gdisc-text-primary'
                     }`}
                   >
                     <div className="flex items-center gap-2 truncate">
-                      <Volume2 className="w-4 h-4 text-gdisc-text-muted group-hover:text-gdisc-text-secondary shrink-0" />
+                      {joiningChannelId === channel.id ? (
+                        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-gdisc-brand-secondary" />
+                      ) : (
+                        <Volume2 className="w-4 h-4 text-gdisc-text-muted group-hover:text-gdisc-text-secondary shrink-0" />
+                      )}
                       <span className="truncate">{channel.name}</span>
                     </div>
 
@@ -272,8 +372,10 @@ export const ChannelSidebar: React.FC = () => {
             </div>
           </div>
           <button
+            type="button"
             onClick={leaveVoice}
             title="Desconectar da chamada"
+            aria-label="Desconectar da chamada"
             className="p-1.5 rounded-lg text-gdisc-danger hover:bg-gdisc-danger/10 transition-colors"
           >
             <PhoneOff className="w-4 h-4" />
@@ -283,6 +385,6 @@ export const ChannelSidebar: React.FC = () => {
 
       {/* User Bottom Bar */}
       <UserControlBar />
-    </div>
+    </aside>
   );
 };

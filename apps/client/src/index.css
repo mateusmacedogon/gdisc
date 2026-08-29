@@ -6,6 +6,21 @@
   color-scheme: dark;
 }
 
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
 /* Custom GDisC scrollbars - ultra thin and subtle */
 ::-webkit-scrollbar {
   width: 6px;
@@ -29,16 +44,135 @@
 body {
   margin: 0;
   padding: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  min-height: 100dvh;
   font-family: 'Inter', sans-serif;
   background-color: #0B0D12;
   color: #F5F7FA;
+  overscroll-behavior: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Micro-transitions */
-button, a, input, select, textarea {
-  transition: all 140ms cubic-bezier(0.16, 1, 0.3, 1);
+button {
+  touch-action: manipulation;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid #8b84ff;
+  outline-offset: 2px;
+}
+
+img,
+video,
+canvas {
+  max-width: 100%;
+}
+
+/* Full-height shell shared by browsers, installed PWAs and future native shells. */
+.gdisc-app-shell {
+  height: 100vh;
+  height: 100dvh;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+.gdisc-mobile-navigation-trigger {
+  top: max(0.5rem, env(safe-area-inset-top, 0px));
+  left: max(0.5rem, env(safe-area-inset-left, 0px));
+}
+
+.gdisc-mobile-member-close {
+  top: max(0.5rem, env(safe-area-inset-top, 0px));
+  right: max(0.5rem, env(safe-area-inset-right, 0px));
+}
+
+.gdisc-mobile-overlay {
+  height: 100vh;
+  height: 100dvh;
+}
+
+.gdisc-mobile-drawer {
+  max-height: 100vh;
+  max-height: 100dvh;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.gdisc-mobile-drawer-left {
+  width: min(19.5rem, calc(100vw - 3.5rem));
+  padding-left: env(safe-area-inset-left, 0px);
+  animation: drawer-from-left 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.gdisc-mobile-drawer-right {
+  width: min(20rem, calc(100vw - 3.5rem));
+  padding-right: env(safe-area-inset-right, 0px);
+  animation: drawer-from-right 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes drawer-from-left {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes drawer-from-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@media (max-width: 767px) {
+  /* Interactive controls used on touch layouts meet the 44px minimum target. */
+  .gdisc-mobile-navigation button,
+  .gdisc-message-composer button {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+
+  /* Reserve the voice header's leading edge for the persistent navigation button. */
+  .gdisc-voice-room-with-menu > div > div:first-child {
+    min-width: 0;
+    padding-right: 0.5rem;
+    padding-left: 3.5rem;
+  }
+
+  .gdisc-voice-room-with-menu > div > div:first-child > div:first-child {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .gdisc-voice-room-with-menu > div > div:first-child h2 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .gdisc-voice-room-with-menu > div > div:first-child > div:last-child {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .gdisc-mobile-drawer-left,
+  .gdisc-mobile-drawer-right {
+    animation: none;
+  }
 }
 
 /* Speaking pulse animation */

@@ -5,7 +5,7 @@ import { useVoiceStore } from '../../stores/useVoiceStore.js';
 import { Mic, Video, Volume2 } from 'lucide-react';
 
 export const DeviceSettingsModal: React.FC = () => {
-  const { activeModal, closeModal } = useUIStore();
+  const { activeModal, closeModal, addToast } = useUIStore();
   const {
     selectedAudioInputId,
     selectedVideoInputId,
@@ -17,9 +17,34 @@ export const DeviceSettingsModal: React.FC = () => {
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
   const [micVolume, setMicVolume] = useState(0);
+  const [switchingDevice, setSwitchingDevice] = useState<'audio' | 'video' | null>(null);
 
   const isOpen = activeModal === 'device_settings';
   const animationFrameRef = useRef<number | null>(null);
+
+  const changeAudioInput = async (deviceId: string) => {
+    setSwitchingDevice('audio');
+    try {
+      await setAudioInput(deviceId);
+      addToast('Microfone atualizado.', 'success');
+    } catch (error) {
+      addToast(error instanceof Error ? error.message : 'Não foi possível trocar o microfone.', 'error');
+    } finally {
+      setSwitchingDevice(null);
+    }
+  };
+
+  const changeVideoInput = async (deviceId: string) => {
+    setSwitchingDevice('video');
+    try {
+      await setVideoInput(deviceId);
+      addToast('Câmera atualizada.', 'success');
+    } catch (error) {
+      addToast(error instanceof Error ? error.message : 'Não foi possível trocar a câmera.', 'error');
+    } finally {
+      setSwitchingDevice(null);
+    }
+  };
 
   useEffect(() => {
     if (!isOpen) return;
@@ -86,14 +111,16 @@ export const DeviceSettingsModal: React.FC = () => {
       <div className="space-y-5">
         {/* Microphone Selector */}
         <div>
-          <label className="flex items-center gap-2 text-xs font-semibold text-gdisc-text-secondary uppercase tracking-wider mb-2">
+          <label htmlFor="audio-input-device" className="flex items-center gap-2 text-xs font-semibold text-gdisc-text-secondary uppercase tracking-wider mb-2">
             <Mic className="w-4 h-4 text-gdisc-brand-secondary" />
             Microfone (Dispositivo de Entrada)
           </label>
           <select
+            id="audio-input-device"
             value={selectedAudioInputId || ''}
-            onChange={(e) => setAudioInput(e.target.value)}
-            className="w-full px-3.5 py-2.5 bg-gdisc-bg-secondary border border-gdisc-bg-hover rounded-xl text-sm text-gdisc-text-primary focus:outline-none focus:border-gdisc-brand-primary transition-colors"
+            onChange={(e) => void changeAudioInput(e.target.value)}
+            disabled={switchingDevice !== null}
+            className="min-h-11 w-full px-3.5 py-2.5 bg-gdisc-bg-secondary border border-gdisc-bg-hover rounded-xl text-base text-gdisc-text-primary focus:outline-none focus:border-gdisc-brand-primary transition-colors disabled:opacity-50 sm:text-sm"
           >
             <option value="">Padrão do Sistema</option>
             {audioDevices.map((d, index) => (
@@ -120,14 +147,16 @@ export const DeviceSettingsModal: React.FC = () => {
 
         {/* Camera Selector */}
         <div>
-          <label className="flex items-center gap-2 text-xs font-semibold text-gdisc-text-secondary uppercase tracking-wider mb-2">
+          <label htmlFor="video-input-device" className="flex items-center gap-2 text-xs font-semibold text-gdisc-text-secondary uppercase tracking-wider mb-2">
             <Video className="w-4 h-4 text-gdisc-brand-secondary" />
             Câmera / Webcam
           </label>
           <select
+            id="video-input-device"
             value={selectedVideoInputId || ''}
-            onChange={(e) => setVideoInput(e.target.value)}
-            className="w-full px-3.5 py-2.5 bg-gdisc-bg-secondary border border-gdisc-bg-hover rounded-xl text-sm text-gdisc-text-primary focus:outline-none focus:border-gdisc-brand-primary transition-colors"
+            onChange={(e) => void changeVideoInput(e.target.value)}
+            disabled={switchingDevice !== null}
+            className="min-h-11 w-full px-3.5 py-2.5 bg-gdisc-bg-secondary border border-gdisc-bg-hover rounded-xl text-base text-gdisc-text-primary focus:outline-none focus:border-gdisc-brand-primary transition-colors disabled:opacity-50 sm:text-sm"
           >
             <option value="">Padrão do Sistema</option>
             {videoDevices.map((d, index) => (

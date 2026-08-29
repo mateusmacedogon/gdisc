@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { wsClient } from '../services/ws.js';
 import { rtcManager } from '../services/rtc.js';
 import { AudioActivityDetector } from '../services/audioMeter.js';
+import { useAuthStore } from './useAuthStore.js';
 import { WSEvents, type VoiceState, type UserSummary, type RTCSignalPayload } from '@gdisc/shared';
 
 const vad = new AudioActivityDetector();
@@ -25,7 +26,7 @@ interface VoiceStoreState {
   selectedVideoInputId?: string;
 
   joinVoice: (channelId: string, serverId: string) => Promise<void>;
-  leaveVoice: () => void;
+  leaveVoice: () => Promise<void>;
   toggleMute: () => void;
   toggleDeaf: () => void;
   toggleVideo: () => Promise<void>;
@@ -57,11 +58,14 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   joinVoice: async (channelId: string, serverId: string) => {
     // If currently in a channel, leave it
     if (get().activeVoiceChannelId) {
-      get().leaveVoice();
+      await get().leaveVoice();
     }
 
+    const currentUserId = useAuthStore.getState().user?.id;
+    if (!currentUserId) throw new Error('É necessário estar autenticado para entrar na call.');
+
     set({ activeVoiceChannelId: channelId, activeServerId: serverId });
-    rtcManager.setChannel(channelId);
+    rtcManager.setChannel(channelId, currentUserId);
 
     // Setup listener for remote stream updates
     rtcManager.setRemoteStreamCallback((streams) => {
@@ -78,6 +82,17 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
 
       set({ localStream: stream });
 
+      // Wait for the private Realtime channel and Presence tracking before any
+      // WebRTC offer, answer or ICE candidate is sent.
+      await wsClient.joinVoice({
+        channelId,
+        serverId,
+        selfMute: get().isMuted,
+        selfDeaf: get().isDeafened,
+        selfVideo: get().isVideoOn,
+        selfScreen: get().isScreenSharing,
+      });
+
       // Start Voice Activity Detection for speaking ring
       vad.start(stream, (speaking) => {
         set({ isSpeaking: speaking });
@@ -86,27 +101,26 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
           isSpeaking: speaking,
         });
       });
-
-      // Send join event over WebSocket
-      wsClient.send(WSEvents.VOICE_JOIN, {
-        channelId,
-        serverId,
-        selfMute: get().isMuted,
-        selfDeaf: get().isDeafened,
-        selfVideo: get().isVideoOn,
-        selfScreen: get().isScreenSharing,
-      });
     } catch (err) {
       console.error('Error joining voice:', err);
+      vad.stop();
+      rtcManager.leaveAll();
+      await wsClient.leaveVoice();
+      set({
+        activeVoiceChannelId: null,
+        activeServerId: null,
+        localStream: null,
+        screenStream: null,
+        remoteStreams: new Map(),
+        isSpeaking: false,
+        isVideoOn: false,
+        isScreenSharing: false,
+      });
+      throw err;
     }
   },
 
-  leaveVoice: () => {
-    const activeChannelId = get().activeVoiceChannelId;
-    if (activeChannelId) {
-      wsClient.send(WSEvents.VOICE_LEAVE, { channelId: activeChannelId });
-    }
-
+  leaveVoice: async () => {
     vad.stop();
     rtcManager.leaveAll();
 
@@ -120,6 +134,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
       isVideoOn: false,
       isScreenSharing: false,
     });
+    await wsClient.leaveVoice();
   },
 
   toggleMute: () => {
@@ -157,13 +172,16 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   toggleVideo: async () => {
     const nextVideo = !get().isVideoOn;
     const stream = await rtcManager.toggleCamera(nextVideo, get().selectedVideoInputId);
-    set({ isVideoOn: nextVideo, localStream: stream });
+    const videoEnabled = nextVideo && Boolean(
+      stream?.getVideoTracks().some((track) => track.readyState === 'live'),
+    );
+    set({ isVideoOn: videoEnabled, localStream: stream });
 
     const channelId = get().activeVoiceChannelId;
     if (channelId) {
       wsClient.send(WSEvents.VOICE_STATE_UPDATE, {
         channelId,
-        selfVideo: nextVideo,
+        selfVideo: videoEnabled,
       });
     }
   },
@@ -171,7 +189,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   toggleScreenShare: async () => {
     const isSharing = get().isScreenSharing;
     if (isSharing) {
-      rtcManager.stopScreenShare();
+      await rtcManager.stopScreenShare();
       set({ isScreenSharing: false, screenStream: null });
       const channelId = get().activeVoiceChannelId;
       if (channelId) {
@@ -225,16 +243,14 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
     }));
 
     // Initiate WebRTC peer connections with existing members in room
-    const currentUserId = localStorage.getItem('gdisc_token')
-      ? JSON.parse(atob(localStorage.getItem('gdisc_token')!.split('.')[1])).userId
-      : null;
+    const currentUserId = useAuthStore.getState().user?.id ?? null;
 
     const otherPeerIds = peers
       .filter((p) => p.userId !== currentUserId)
       .map((p) => p.userId);
 
-    if (otherPeerIds.length > 0) {
-      rtcManager.connectToPeers(otherPeerIds);
+    if (channelId === get().activeVoiceChannelId) {
+      void rtcManager.syncPeers(otherPeerIds);
     }
   },
 
@@ -249,6 +265,10 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
         },
       };
     });
+
+    if (voiceState.channelId === get().activeVoiceChannelId) {
+      void rtcManager.connectToPeers([voiceState.userId]);
+    }
   },
 
   handleUserLeftVoice: (channelId: string, userId: string) => {
@@ -267,18 +287,19 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   handleVoiceStateUpdate: (voiceState: VoiceState) => {
     set((state) => {
       const channelUsers = state.voiceStates[voiceState.channelId] || [];
+      const exists = channelUsers.some((user) => user.userId === voiceState.userId);
       return {
         voiceStates: {
           ...state.voiceStates,
-          [voiceState.channelId]: channelUsers.map((u) =>
-            u.userId === voiceState.userId ? voiceState : u
-          ),
+          [voiceState.channelId]: exists
+            ? channelUsers.map((u) => u.userId === voiceState.userId ? voiceState : u)
+            : [...channelUsers, voiceState],
         },
       };
     });
   },
 
   handleRtcSignal: (payload: RTCSignalPayload) => {
-    rtcManager.handleSignal(payload);
+    void rtcManager.handleSignal(payload);
   },
 }));

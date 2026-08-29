@@ -21,6 +21,7 @@ interface UIState {
   modalData: any;
   toasts: ToastInfo[];
   isMobileSidebarOpen: boolean;
+  isMobileMemberListOpen: boolean;
   isMemberListOpen: boolean;
 
   openModal: (type: ModalType, data?: any) => void;
@@ -28,6 +29,10 @@ interface UIState {
   addToast: (message: string, type?: 'success' | 'error' | 'info') => void;
   removeToast: (id: string) => void;
   toggleMobileSidebar: () => void;
+  closeMobileSidebar: () => void;
+  toggleMobileMemberList: () => void;
+  closeMobileMemberList: () => void;
+  closeMobilePanels: () => void;
   toggleMemberList: () => void;
 }
 
@@ -36,6 +41,7 @@ export const useUIStore = create<UIState>((set) => ({
   modalData: null,
   toasts: [],
   isMobileSidebarOpen: false,
+  isMobileMemberListOpen: false,
   isMemberListOpen: true,
 
   openModal: (type: ModalType, data: any = null) => {
@@ -66,7 +72,29 @@ export const useUIStore = create<UIState>((set) => ({
   },
 
   toggleMobileSidebar: () => {
-    set((state) => ({ isMobileSidebarOpen: !state.isMobileSidebarOpen }));
+    set((state) => ({
+      isMobileSidebarOpen: !state.isMobileSidebarOpen,
+      isMobileMemberListOpen: false,
+    }));
+  },
+
+  closeMobileSidebar: () => {
+    set({ isMobileSidebarOpen: false });
+  },
+
+  toggleMobileMemberList: () => {
+    set((state) => ({
+      isMobileMemberListOpen: !state.isMobileMemberListOpen,
+      isMobileSidebarOpen: false,
+    }));
+  },
+
+  closeMobileMemberList: () => {
+    set({ isMobileMemberListOpen: false });
+  },
+
+  closeMobilePanels: () => {
+    set({ isMobileSidebarOpen: false, isMobileMemberListOpen: false });
   },
 
   toggleMemberList: () => {

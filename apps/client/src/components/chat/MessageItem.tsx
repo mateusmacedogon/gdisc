@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { useAuthStore } from '../../stores/useAuthStore.js';
 import { useChatStore } from '../../stores/useChatStore.js';
+import { useUIStore } from '../../stores/useUIStore.js';
 import { Avatar } from '../common/Avatar.js';
-import { Reply, Edit3, Trash2, Check, X, CornerDownRight } from 'lucide-react';
+import { Reply, Edit3, Trash2, CornerDownRight, MoreHorizontal } from 'lucide-react';
 import type { MessageSummary } from '@gdisc/shared';
 
 interface MessageItemProps {
@@ -16,9 +17,12 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 }) => {
   const { user } = useAuthStore();
   const { setReplyingTo, editMessage, deleteMessage } = useChatStore();
+  const { addToast } = useUIStore();
 
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isActionsOpen, setIsActionsOpen] = useState(false);
 
   const isAuthor = user?.id === message.authorId;
   const canDelete = isAuthor || canManageMessages;
@@ -29,7 +33,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
       await editMessage(message.id, editContent);
       setIsEditing(false);
     } catch (err) {
-      console.error('Failed to save edit:', err);
+      addToast(err instanceof Error ? err.message : 'Não foi possível editar a mensagem.', 'error');
     }
   };
 
@@ -40,6 +44,23 @@ export const MessageItem: React.FC<MessageItemProps> = ({
     } else if (e.key === 'Escape') {
       setIsEditing(false);
       setEditContent(message.content);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!confirm('Deseja realmente apagar esta mensagem?')) return;
+
+    setIsDeleting(true);
+    try {
+      await deleteMessage(message.id);
+      setIsActionsOpen(false);
+    } catch (error) {
+      addToast(
+        error instanceof Error ? error.message : 'Não foi possível apagar a mensagem.',
+        'error'
+      );
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -79,7 +100,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         />
 
         {/* Message Content */}
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 pr-11 sm:pr-0">
           <div className="flex items-baseline gap-2 mb-0.5">
             <span className="text-sm font-semibold text-gdisc-text-primary hover:underline cursor-pointer">
               {message.author.displayName}
@@ -115,25 +136,46 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           )}
         </div>
 
-        {/* Action Toolbar on Hover */}
         {!isEditing && (
-          <div className="absolute right-4 -top-3 hidden group-hover:flex items-center bg-gdisc-bg-card border border-gdisc-bg-hover rounded-lg shadow-lg p-0.5 z-10 animate-fade-in">
+          <button
+            type="button"
+            onClick={() => setIsActionsOpen((open) => !open)}
+            aria-label={isActionsOpen ? 'Fechar ações da mensagem' : 'Abrir ações da mensagem'}
+            aria-expanded={isActionsOpen}
+            title="Ações da mensagem"
+            className="absolute right-2 top-1 flex min-h-11 min-w-11 items-center justify-center rounded-lg text-gdisc-text-muted hover:bg-gdisc-bg-hover hover:text-gdisc-text-primary sm:hidden"
+          >
+            <MoreHorizontal className="h-5 w-5" />
+          </button>
+        )}
+
+        {/* Compact menu on touch; hover-revealed toolbar on larger screens. */}
+        {!isEditing && (
+          <div className={`absolute right-2 top-12 z-20 items-center rounded-lg border border-gdisc-bg-hover bg-gdisc-bg-card p-0.5 shadow-lg animate-fade-in sm:right-4 sm:-top-3 sm:hidden sm:group-hover:flex sm:group-focus-within:flex ${isActionsOpen ? 'flex' : 'hidden'}`}>
             <button
-              onClick={() => setReplyingTo(message)}
+              type="button"
+              onClick={() => {
+                setReplyingTo(message);
+                setIsActionsOpen(false);
+              }}
+              aria-label="Responder mensagem"
               title="Responder mensagem"
-              className="p-1.5 text-gdisc-text-muted hover:text-gdisc-text-primary hover:bg-gdisc-bg-hover rounded-md transition-colors"
+              className="flex min-h-11 min-w-11 items-center justify-center text-gdisc-text-muted hover:text-gdisc-text-primary hover:bg-gdisc-bg-hover rounded-md transition-colors sm:min-h-9 sm:min-w-9"
             >
               <Reply className="w-4 h-4" />
             </button>
 
             {isAuthor && (
               <button
+                type="button"
                 onClick={() => {
                   setIsEditing(true);
                   setEditContent(message.content);
+                  setIsActionsOpen(false);
                 }}
+                aria-label="Editar mensagem"
                 title="Editar mensagem"
-                className="p-1.5 text-gdisc-text-muted hover:text-gdisc-text-primary hover:bg-gdisc-bg-hover rounded-md transition-colors"
+                className="flex min-h-11 min-w-11 items-center justify-center text-gdisc-text-muted hover:text-gdisc-text-primary hover:bg-gdisc-bg-hover rounded-md transition-colors sm:min-h-9 sm:min-w-9"
               >
                 <Edit3 className="w-4 h-4" />
               </button>
@@ -141,13 +183,12 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
             {canDelete && (
               <button
-                onClick={() => {
-                  if (confirm('Deseja realmente apagar esta mensagem?')) {
-                    deleteMessage(message.id);
-                  }
-                }}
+                type="button"
+                onClick={() => void handleDelete()}
+                disabled={isDeleting}
+                aria-label="Excluir mensagem"
                 title="Excluir mensagem"
-                className="p-1.5 text-gdisc-text-muted hover:text-gdisc-danger hover:bg-gdisc-danger/10 rounded-md transition-colors"
+                className="flex min-h-11 min-w-11 items-center justify-center text-gdisc-text-muted hover:text-gdisc-danger hover:bg-gdisc-danger/10 rounded-md transition-colors disabled:cursor-wait disabled:opacity-50 sm:min-h-9 sm:min-w-9"
               >
                 <Trash2 className="w-4 h-4" />
               </button>

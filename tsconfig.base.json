@@ -10,10 +10,6 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "declaration": true,
-    "declarationMap": true,
-    "baseUrl": ".",
-    "paths": {
-      "@gdisc/shared": ["./packages/shared/src/index.ts"]
-    }
+    "declarationMap": true
   }
 }

@@ -42,12 +42,22 @@ export const InviteModal: React.FC = () => {
     generateInvite();
   }, [isInviteMode, modalData?.serverId]);
 
-  const handleCopy = () => {
+  useEffect(() => {
+    if (isJoinMode && modalData?.inviteCode) {
+      setJoinCodeInput(String(modalData.inviteCode));
+    }
+  }, [isJoinMode, modalData?.inviteCode]);
+
+  const handleCopy = async () => {
     const inviteUrl = `${window.location.origin}/#invite=${inviteCode}`;
-    navigator.clipboard.writeText(inviteCode);
-    setCopied(true);
-    addToast('Código de convite copiado!', 'success');
-    setTimeout(() => setCopied(false), 2500);
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setCopied(true);
+      addToast('Link de convite copiado!', 'success');
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      addToast('Não foi possível copiar. Selecione o código manualmente.', 'error');
+    }
   };
 
   const handleJoin = async (e: React.FormEvent) => {

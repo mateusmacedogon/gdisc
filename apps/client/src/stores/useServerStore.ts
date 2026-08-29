@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api } from '../services/api.js';
 import { useChannelStore } from './useChannelStore.js';
+import { wsClient } from '../services/ws.js';
 import type {
   ServerSummary,
   ServerMemberSummary,
@@ -9,6 +10,7 @@ import type {
   UpdateServerDTO,
   UserStatus,
 } from '@gdisc/shared';
+import { WSEvents } from '@gdisc/shared';
 
 interface ServerState {
   servers: ServerSummary[];
@@ -25,6 +27,7 @@ interface ServerState {
   updateServer: (serverId: string, dto: UpdateServerDTO) => Promise<void>;
   deleteServer: (serverId: string) => Promise<void>;
   leaveServer: (serverId: string) => Promise<void>;
+  kickMember: (serverId: string, memberId: string, userId: string) => Promise<void>;
   fetchMembers: (serverId: string) => Promise<void>;
   fetchRoles: (serverId: string) => Promise<void>;
 
@@ -63,6 +66,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
         activeServer: currentActive,
         isLoading: false,
       });
+      wsClient.syncServers(servers);
 
       if (currentActive) {
         // Sync channels for the active server
@@ -118,6 +122,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
         activeServerId: server.id,
         activeServer: server,
       }));
+      wsClient.syncServers(get().servers);
       if (server.channels) {
         useChannelStore.getState().setChannels(server.channels);
       }
@@ -137,6 +142,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
         servers: state.servers.map((s) => (s.id === serverId ? server : s)),
         activeServer: state.activeServerId === serverId ? server : state.activeServer,
       }));
+      wsClient.syncServers(get().servers);
     } catch (err: any) {
       set({ error: err.message || 'Falha ao atualizar servidor' });
       throw err;
@@ -155,6 +161,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
           activeServer: nextActive,
         };
       });
+      wsClient.syncServers(get().servers);
 
       const next = get().activeServer;
       if (next) {
@@ -180,6 +187,7 @@ export const useServerStore = create<ServerState>((set, get) => ({
           activeServer: nextActive,
         };
       });
+      wsClient.syncServers(get().servers);
 
       const next = get().activeServer;
       if (next) {
@@ -189,6 +197,26 @@ export const useServerStore = create<ServerState>((set, get) => ({
       }
     } catch (err: any) {
       set({ error: err.message || 'Falha ao sair do servidor' });
+      throw err;
+    }
+  },
+
+  kickMember: async (serverId: string, memberId: string, userId: string) => {
+    try {
+      const result = await api.delete<{ success: boolean; userId: string }>(
+        `/servers/${serverId}/members/${memberId}`,
+      );
+      const removedUserId = result.userId || userId;
+      get().removeMember(serverId, removedUserId);
+      wsClient.send(WSEvents.SERVER_MEMBER_LEFT, {
+        serverId,
+        userId: removedUserId,
+        refresh: true,
+        kicked: true,
+      });
+      await get().fetchServers();
+    } catch (err: any) {
+      set({ error: err.message || 'Falha ao expulsar membro' });
       throw err;
     }
   },

@@ -1,5 +1,5 @@
 import { prisma } from '../../plugins/prisma.js';
-import { DEFAULT_EVERYONE_PERMISSIONS, PermissionFlags } from '@gdisc/shared';
+import { DEFAULT_EVERYONE_PERMISSIONS } from '@gdisc/shared';
 import type { CreateServerInput, UpdateServerInput } from './server.schema.js';
 import type { ServerSummary, ServerMemberSummary, ChannelSummary, RoleSummary } from '@gdisc/shared';
 import { nanoid } from 'nanoid';
@@ -222,6 +222,25 @@ export class ServerService {
         userId,
       },
     });
+  }
+
+  async kickMember(serverId: string, memberId: string, requesterId: string): Promise<string> {
+    const [server, member] = await Promise.all([
+      prisma.server.findUnique({ where: { id: serverId } }),
+      prisma.serverMember.findUnique({ where: { id: memberId } }),
+    ]);
+
+    if (!server) throw new Error('Servidor não encontrado.');
+    if (!member || member.serverId !== serverId) throw new Error('Membro não encontrado.');
+    if (member.userId === server.ownerId) {
+      throw new Error('O proprietário não pode ser expulso do próprio servidor.');
+    }
+    if (member.userId === requesterId) {
+      throw new Error('Use a opção de sair do servidor para remover a si mesmo.');
+    }
+
+    await prisma.serverMember.delete({ where: { id: memberId } });
+    return member.userId;
   }
 
   private mapServerSummary(server: any, memberCount: number): ServerSummary {

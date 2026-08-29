@@ -28,8 +28,18 @@ async function bootstrap() {
     await connectPrisma();
 
     // 2. Core Security & Middleware Plugins
+    const allowedOrigins = env.CLIENT_ORIGIN.split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean);
+
     await fastify.register(cors, {
-      origin: true, // Allow frontend during development and configured domains
+      origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+        callback(new Error('Origin não permitida'), false);
+      },
       credentials: true,
     });
 
