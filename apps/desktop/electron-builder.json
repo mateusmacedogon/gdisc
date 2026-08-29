@@ -18,6 +18,11 @@
       "from": "../client/dist",
       "to": "client/dist",
       "filter": ["**/*"]
+    },
+    {
+      "from": "../client/dist",
+      "to": "dist",
+      "filter": ["**/*"]
     }
   ],
   "extraMetadata": {

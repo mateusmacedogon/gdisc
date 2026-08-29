@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, session, Tray, Menu, nativeImage } from 'electron';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -12,8 +13,31 @@ app.commandLine.appendSwitch('ignore-certificate-errors');
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 
-const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+const isDev = process.env.NODE_ENV === 'development' && Boolean(process.env.DEV_SERVER_URL);
 const devServerUrl = process.env.DEV_SERVER_URL || 'http://localhost:5173';
+
+function tryLoadLocalFiles(win: BrowserWindow) {
+  const appDir = app.getAppPath();
+  const candidatePaths = [
+    path.join(appDir, 'client/dist/index.html'),
+    path.join(appDir, 'dist/index.html'),
+    path.resolve(__dirname, '../../client/dist/index.html'),
+    path.resolve(__dirname, '../../../dist/index.html'),
+    path.resolve(__dirname, '../client/dist/index.html'),
+  ];
+
+  for (const candidate of candidatePaths) {
+    if (fs.existsSync(candidate)) {
+      console.log('Loading local UI from:', candidate);
+      win.loadFile(candidate).catch((err) => {
+        console.error('Failed to load file candidate:', candidate, err);
+      });
+      return;
+    }
+  }
+
+  console.error('Could not find index.html in candidates:', candidatePaths);
+}
 
 function createMainWindow(): BrowserWindow {
   const preloadPath = path.resolve(__dirname, 'preload.js');
@@ -32,7 +56,7 @@ function createMainWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      webSecurity: true,
+      webSecurity: false, // Allows seamless local file loading & WebRTC mesh P2P
     },
   });
 
@@ -59,26 +83,20 @@ function createMainWindow(): BrowserWindow {
     win.show();
   });
 
-  // Load URL or static production build
+  // Load URL in dev mode or local production files with auto-fallback
   if (isDev) {
-    win.loadURL(devServerUrl);
-  } else {
-    const appDir = app.getAppPath();
-    const clientPath = path.join(appDir, 'client/dist/index.html');
-    const fallbackPath = path.join(appDir, 'dist/index.html');
-
-    win.loadFile(clientPath).catch(() => {
-      win.loadFile(fallbackPath).catch((err) => {
-        console.error('Failed to load bundled UI:', err);
-      });
+    win.loadURL(devServerUrl).catch(() => {
+      console.warn('Dev server not responding at', devServerUrl, '- falling back to local files');
+      tryLoadLocalFiles(win);
     });
+  } else {
+    tryLoadLocalFiles(win);
   }
 
   return win;
 }
 
 function createTray() {
-  // Generate simple 16x16 purple dot icon if image file not loaded
   const icon = nativeImage.createFromBuffer(
     Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAZElEQVR42mNk+M9QzwAFjAwM/1EwE24FjEh8kJr/aJgYjE2cEcX5j1OckYFhAIsCknE+yA5ihjGQ7kEWBzGIYgU4fYZiB5I4E37FhHwJMg+nQnwWIxNihg9jU8yIVYExmK0gAABHshf5WzN33AAAAABJRU5ErkJggg==',

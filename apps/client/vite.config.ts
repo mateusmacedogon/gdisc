@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
+  base: './', // Essential for Electron local file loading and relative asset resolution
   plugins: [react()],
   envDir: '../..',
   build: {
