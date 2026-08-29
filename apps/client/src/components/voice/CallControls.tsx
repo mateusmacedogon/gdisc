@@ -82,11 +82,17 @@ export const CallControls: React.FC = () => {
         {/* Toggle Screen Share */}
         <button
           type="button"
-          onClick={() => void runAction('screen', toggleScreenShare, 'Não foi possível alterar o compartilhamento de tela.')}
+          onClick={() => {
+            if (isScreenSharing) {
+              void runAction('screen', () => toggleScreenShare(), 'Não foi possível parar o compartilhamento.');
+            } else {
+              openModal('screen_share');
+            }
+          }}
           disabled={pendingAction !== null}
           aria-label={isScreenSharing ? 'Parar compartilhamento de tela' : 'Compartilhar tela'}
           aria-pressed={isScreenSharing}
-          title={isScreenSharing ? 'Parar Compartilhamento' : 'Compartilhar Tela'}
+          title={isScreenSharing ? 'Parar Compartilhamento' : 'Compartilhar Tela (Opções)'}
           className={`flex min-h-11 min-w-11 items-center justify-center rounded-xl transition-all shadow-md disabled:opacity-50 ${
             isScreenSharing
               ? 'bg-gdisc-success text-white hover:opacity-90'

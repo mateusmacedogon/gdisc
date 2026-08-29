@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { wsClient } from '../services/ws.js';
-import { rtcManager } from '../services/rtc.js';
+import { rtcManager, type ScreenShareOptions } from '../services/rtc.js';
 import { AudioActivityDetector } from '../services/audioMeter.js';
 import { useAuthStore } from './useAuthStore.js';
 import { WSEvents, type VoiceState, type UserSummary, type RTCSignalPayload } from '@gdisc/shared';
@@ -30,7 +30,7 @@ interface VoiceStoreState {
   toggleMute: () => void;
   toggleDeaf: () => void;
   toggleVideo: () => Promise<void>;
-  toggleScreenShare: () => Promise<void>;
+  toggleScreenShare: (options?: ScreenShareOptions) => Promise<void>;
   setAudioInput: (deviceId: string) => Promise<void>;
   setVideoInput: (deviceId: string) => Promise<void>;
 
@@ -186,7 +186,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
     }
   },
 
-  toggleScreenShare: async () => {
+  toggleScreenShare: async (options?: ScreenShareOptions) => {
     const isSharing = get().isScreenSharing;
     if (isSharing) {
       await rtcManager.stopScreenShare();
@@ -199,7 +199,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
         });
       }
     } else {
-      const stream = await rtcManager.startScreenShare();
+      const stream = await rtcManager.startScreenShare(options);
       if (stream) {
         set({ isScreenSharing: true, screenStream: stream });
         const channelId = get().activeVoiceChannelId;

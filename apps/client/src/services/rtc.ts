@@ -34,6 +34,13 @@ const RTC_CONFIG: RTCConfiguration = {
   iceCandidatePoolSize: 10,
 };
 
+export interface ScreenShareOptions {
+  sourceId?: string;
+  resolution?: '720p' | '1080p' | 'original';
+  fps?: 15 | 30 | 60;
+  withAudio?: boolean;
+}
+
 export interface RemotePeerStream {
   userId: string;
   stream: MediaStream;
@@ -107,16 +114,62 @@ class WebRTCManager {
   }
 
   /**
-   * Starts screen capture via getDisplayMedia
+   * Starts screen capture via desktop source or getDisplayMedia
    */
-  public async startScreenShare(): Promise<MediaStream | null> {
+  public async startScreenShare(options?: ScreenShareOptions): Promise<MediaStream | null> {
     try {
-      this.screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          cursor: 'always',
-        } as any,
-        audio: false,
-      });
+      const fps = options?.fps ?? 30;
+      let width = 1920;
+      let height = 1080;
+
+      if (options?.resolution === '720p') {
+        width = 1280;
+        height = 720;
+      } else if (options?.resolution === 'original') {
+        width = 3840;
+        height = 2160;
+      }
+
+      this.screenStream = null;
+
+      // In Electron desktop environment with a specific selected window or screen
+      if (options?.sourceId) {
+        try {
+          const stream = await (navigator.mediaDevices as any).getUserMedia({
+            audio: options.withAudio
+              ? {
+                  mandatory: {
+                    chromeMediaSource: 'desktop',
+                  },
+                }
+              : false,
+            video: {
+              mandatory: {
+                chromeMediaSource: 'desktop',
+                chromeMediaSourceId: options.sourceId,
+                maxWidth: width,
+                maxHeight: height,
+                maxFrameRate: fps,
+              },
+            },
+          });
+          this.screenStream = stream;
+        } catch (desktopErr) {
+          console.warn('getUserMedia desktop source failed, falling back to getDisplayMedia:', desktopErr);
+        }
+      }
+
+      if (!this.screenStream) {
+        this.screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            cursor: 'always',
+            width: { ideal: width },
+            height: { ideal: height },
+            frameRate: { ideal: fps, max: fps },
+          } as any,
+          audio: Boolean(options?.withAudio),
+        });
+      }
 
       const videoTrack = this.screenStream.getVideoTracks()[0];
       if (videoTrack) {

@@ -12,6 +12,7 @@ app.commandLine.appendSwitch('ignore-certificate-errors');
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let selectedSourceId: string | null = null;
 
 const isDev = process.env.NODE_ENV === 'development' && Boolean(process.env.DEV_SERVER_URL);
 const devServerUrl = process.env.DEV_SERVER_URL || 'http://localhost:5173';
@@ -95,8 +96,10 @@ function setupMediaHandlers() {
       .getSources({ types: ['screen', 'window'] })
       .then((sources) => {
         if (sources.length > 0) {
-          // Grant the primary entire screen source
-          callback({ video: sources[0] });
+          const match = selectedSourceId
+            ? sources.find((s) => s.id === selectedSourceId) || sources[0]
+            : sources[0];
+          callback({ video: match });
         } else {
           callback({});
         }
@@ -237,6 +240,26 @@ function setupIpcHandlers() {
 
   ipcMain.handle('window-is-maximized', () => {
     return mainWindow ? mainWindow.isMaximized() : false;
+  });
+
+  ipcMain.handle('get-screen-sources', async () => {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 480, height: 270 },
+      fetchWindowIcons: true,
+    });
+
+    return sources.map((s) => ({
+      id: s.id,
+      name: s.name,
+      thumbnail: s.thumbnail.toDataURL(),
+      appIcon: s.appIcon ? s.appIcon.toDataURL() : null,
+      isScreen: s.id.startsWith('screen:'),
+    }));
+  });
+
+  ipcMain.on('select-screen-source', (_event, sourceId: string) => {
+    selectedSourceId = sourceId;
   });
 }
 

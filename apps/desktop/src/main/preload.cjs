@@ -28,6 +28,10 @@ const electronAPI = {
       ipcRenderer.removeListener('window-maximized-state', handler);
     };
   },
+
+  getScreenSources: () => {
+    return ipcRenderer.invoke('get-screen-sources');
+  },
 };
 
 try {

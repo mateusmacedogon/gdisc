@@ -3,20 +3,6 @@ import { Minus, Square, Copy, X, Radio } from 'lucide-react';
 import { useServerStore } from '../../stores/useServerStore.js';
 import { useChannelStore } from '../../stores/useChannelStore.js';
 
-declare global {
-  interface Window {
-    electronAPI?: {
-      isElectron: boolean;
-      platform: string;
-      minimize: () => void;
-      maximize: () => void;
-      close: () => void;
-      isMaximized: () => Promise<boolean>;
-      onMaximizedChange: (callback: (isMax: boolean) => void) => () => void;
-    };
-  }
-}
-
 export const DesktopTitlebar: React.FC = () => {
   const [isMaximized, setIsMaximized] = useState(false);
   const { activeServer } = useServerStore();

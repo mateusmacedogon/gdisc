@@ -13,6 +13,7 @@ import { ServerSettingsModal } from '../server/ServerSettingsModal.js';
 import { ChannelModal } from '../server/ChannelModal.js';
 import { UserSettingsModal } from '../user/UserSettingsModal.js';
 import { DeviceSettingsModal } from '../voice/DeviceSettingsModal.js';
+import { ScreenShareModal } from '../voice/ScreenShareModal.js';
 import { Menu, X } from 'lucide-react';
 
 import { useServerStore } from '../../stores/useServerStore.js';
@@ -362,6 +363,7 @@ export const AppLayout: React.FC = () => {
       <ChannelModal />
       <UserSettingsModal />
       <DeviceSettingsModal />
+      <ScreenShareModal />
 
       {/* Toast Alerts */}
       <ToastContainer />

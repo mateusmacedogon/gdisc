@@ -1,6 +1,25 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-const electronAPI = {
+export interface DesktopCaptureSource {
+  id: string;
+  name: string;
+  thumbnail: string;
+  appIcon: string | null;
+  isScreen: boolean;
+}
+
+export interface ElectronAPI {
+  isElectron: boolean;
+  platform: string;
+  minimize: () => void;
+  maximize: () => void;
+  close: () => void;
+  isMaximized: () => Promise<boolean>;
+  onMaximizedChange: (callback: (isMax: boolean) => void) => () => void;
+  getScreenSources: () => Promise<DesktopCaptureSource[]>;
+}
+
+const electronAPI: ElectronAPI = {
   isElectron: true,
   platform: process.platform,
 
@@ -27,6 +46,10 @@ const electronAPI = {
     return () => {
       ipcRenderer.removeListener('window-maximized-state', handler);
     };
+  },
+
+  getScreenSources: () => {
+    return ipcRenderer.invoke('get-screen-sources');
   },
 };
 

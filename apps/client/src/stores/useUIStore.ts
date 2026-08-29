@@ -7,6 +7,7 @@ export type ModalType =
   | 'user_settings'
   | 'channel_settings'
   | 'device_settings'
+  | 'screen_share'
   | 'join_invite'
   | null;
 
