@@ -1,6 +1,7 @@
 /**
- * GDisC WebRTC Mesh Realtime Engine
- * Handles audio, video, and screen sharing with peer-to-peer mesh connections.
+ * GDisC WebRTC Realtime Mesh Engine
+ * Ultra-stable Peer-to-Peer engine with Perfect Negotiation, automatic ICE restart,
+ * optimized screen sharing bitrate, and dynamic stream synchronization.
  */
 
 import { wsClient } from './ws.js';
@@ -30,9 +31,14 @@ const RTC_CONFIG: RTCConfiguration = {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
     ...configuredTurnServer,
   ],
   iceCandidatePoolSize: 10,
+  iceTransportPolicy: 'all',
+  bundlePolicy: 'max-bundle',
+  rtcpMuxPolicy: 'require',
 };
 
 export interface ScreenShareOptions {
@@ -58,6 +64,7 @@ class WebRTCManager {
   private remoteStreams: Map<string, MediaStream> = new Map();
   private pendingIceCandidates: Map<string, RTCIceCandidateInit[]> = new Map();
   private disconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  private isMakingOffer: Map<string, boolean> = new Map();
   private currentChannelId: string | null = null;
   private localUserId: string | null = null;
   private onRemoteStreamsChanged: RemoteStreamCallback | null = null;
@@ -107,7 +114,7 @@ class WebRTCManager {
     try {
       nextStream = await navigator.mediaDevices.getUserMedia(constraints);
     } catch (err) {
-      console.warn('getUserMedia failed with requested constraints, falling back to the default microphone:', err);
+      console.warn('getUserMedia failed with requested constraints, falling back to default:', err);
       if (!audio) throw this.createMediaError(err, 'Não foi possível acessar a câmera.');
       try {
         nextStream = await navigator.mediaDevices.getUserMedia({
@@ -222,6 +229,8 @@ class WebRTCManager {
 
       const videoTrack = this.screenStream.getVideoTracks()[0];
       if (videoTrack) {
+        // Optimize text sharpness vs motion
+        videoTrack.contentHint = fps >= 60 ? 'motion' : 'detail';
         videoTrack.onended = () => {
           void this.stopScreenShare().finally(() => this.onScreenShareEnded?.());
         };
@@ -307,8 +316,7 @@ class WebRTCManager {
     for (const peerId of [...new Set(peerUserIds)].sort()) {
       if (!peerId || peerId === this.localUserId || this.peerConnections.has(peerId)) continue;
 
-      // Both clients receive the same Presence sync. A deterministic initiator
-      // prevents offer glare and duplicate peer connections.
+      // Both clients receive presence sync. The polite/initiator peer starts negotiation.
       if (this.localUserId.localeCompare(peerId) < 0) {
         await this.createPeerConnection(peerId, true);
       }
@@ -324,7 +332,7 @@ class WebRTCManager {
   }
 
   /**
-   * Handle incoming WebRTC signaling message
+   * Handle incoming WebRTC signaling message with Perfect Negotiation pattern
    */
   public async handleSignal(payload: RTCSignalPayload) {
     const { fromUserId, signal, channelId } = payload;
@@ -346,14 +354,31 @@ class WebRTCManager {
       }
 
       if (signal.type === 'offer' && signal.sdp) {
-        if (pc && pc.signalingState !== 'stable') {
-          this.removePeer(fromUserId);
-          pc = undefined;
+        if (!pc) {
+          pc = await this.createPeerConnection(fromUserId, false);
         }
-        if (!pc) pc = await this.createPeerConnection(fromUserId, false);
+
+        const isPolite = Boolean(this.localUserId && this.localUserId.localeCompare(fromUserId) > 0);
+        const isMakingOffer = this.isMakingOffer.get(fromUserId) ?? false;
+        const offerCollision = isMakingOffer || pc.signalingState !== 'stable';
+
+        if (offerCollision && !isPolite) {
+          console.log('[WebRTC] Impolite peer ignoring offer collision from:', fromUserId);
+          return;
+        }
+
+        if (offerCollision && isPolite) {
+          console.log('[WebRTC] Polite peer yielding to offer collision from:', fromUserId);
+          try {
+            await pc.setLocalDescription({ type: 'rollback' });
+          } catch {
+            // Rollback fallback
+          }
+        }
 
         await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: signal.sdp }));
         await this.flushPendingIceCandidates(fromUserId, pc);
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
 
@@ -366,11 +391,13 @@ class WebRTCManager {
           },
         });
       } else if (signal.type === 'answer' && pc && signal.sdp) {
-        await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: signal.sdp }));
-        await this.flushPendingIceCandidates(fromUserId, pc);
+        if (pc.signalingState === 'have-local-offer') {
+          await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: signal.sdp }));
+          await this.flushPendingIceCandidates(fromUserId, pc);
+        }
       }
     } catch (error) {
-      console.warn('Falha ao processar sinal WebRTC:', signal.type, error);
+      console.warn('[WebRTC] Falha ao processar sinal WebRTC:', signal.type, error);
     }
   }
 
@@ -384,6 +411,7 @@ class WebRTCManager {
     if (timer) clearTimeout(timer);
     this.disconnectTimers.delete(userId);
     this.pendingIceCandidates.delete(userId);
+    this.isMakingOffer.delete(userId);
     this.remoteStreams.delete(userId);
     this.notifyRemoteStreamsChanged();
   }
@@ -398,12 +426,13 @@ class WebRTCManager {
       this.screenStream = null;
     }
 
-    for (const [userId, pc] of this.peerConnections.entries()) {
+    for (const [, pc] of this.peerConnections.entries()) {
       pc.close();
     }
     this.peerConnections.clear();
     this.remoteStreams.clear();
     this.pendingIceCandidates.clear();
+    this.isMakingOffer.clear();
     for (const timer of this.disconnectTimers.values()) clearTimeout(timer);
     this.disconnectTimers.clear();
     this.currentChannelId = null;
@@ -417,9 +446,9 @@ class WebRTCManager {
 
     const pc = new RTCPeerConnection(RTC_CONFIG);
     this.peerConnections.set(targetUserId, pc);
+    this.isMakingOffer.set(targetUserId, false);
 
-    // Reserve microphone, shared-system-audio and video transceivers up front.
-    // Tracks can then be replaced later without changing their ordering.
+    // Add all current tracks (microphone, screen audio, screen/camera video)
     await this.addTracksToPC(pc);
 
     // ICE Candidate handler
@@ -436,50 +465,65 @@ class WebRTCManager {
       }
     };
 
-    // Remote Track handler
+    // Remote Track handler with automatic refresh
     pc.ontrack = (event) => {
-      const eventStream = event.streams[0];
-      let remoteStream = eventStream ?? this.remoteStreams.get(targetUserId);
-      if (!remoteStream) remoteStream = new MediaStream();
-      if (!eventStream && !remoteStream.getTracks().some((track) => track.id === event.track.id)) {
+      let remoteStream = this.remoteStreams.get(targetUserId);
+      if (!remoteStream) {
+        remoteStream = new MediaStream();
+        this.remoteStreams.set(targetUserId, remoteStream);
+      }
+
+      if (!remoteStream.getTracks().some((t) => t.id === event.track.id)) {
         remoteStream.addTrack(event.track);
       }
-      this.remoteStreams.set(targetUserId, remoteStream);
+
+      const refreshRemoteStream = () => {
+        const current = this.remoteStreams.get(targetUserId);
+        if (current) {
+          // Re-instantiate MediaStream reference so React components trigger immediate re-render
+          const updated = new MediaStream(current.getTracks().filter((t) => t.readyState === 'live'));
+          this.remoteStreams.set(targetUserId, updated);
+          this.notifyRemoteStreamsChanged();
+        }
+      };
 
       event.track.onended = () => {
         if (remoteStream) {
           remoteStream.removeTrack(event.track);
-          this.notifyRemoteStreamsChanged();
+          refreshRemoteStream();
         }
       };
-      event.track.onunmute = () => this.notifyRemoteStreamsChanged();
-      event.track.onmute = () => this.notifyRemoteStreamsChanged();
+      event.track.onunmute = () => refreshRemoteStream();
+      event.track.onmute = () => refreshRemoteStream();
 
-      this.notifyRemoteStreamsChanged();
+      refreshRemoteStream();
     };
 
-    // Connection state logging
+    // Resilient Connection State & Automatic ICE Recovery
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'connected') {
         const timer = this.disconnectTimers.get(targetUserId);
         if (timer) clearTimeout(timer);
         this.disconnectTimers.delete(targetUserId);
       } else if (pc.connectionState === 'disconnected') {
+        console.warn(`[WebRTC] Peer ${targetUserId} disconnected, attempting ICE restart...`);
+        void this.restartIce(targetUserId, pc);
         const previous = this.disconnectTimers.get(targetUserId);
         if (previous) clearTimeout(previous);
         this.disconnectTimers.set(targetUserId, setTimeout(() => {
-          if (pc.connectionState === 'disconnected') this.removePeer(targetUserId);
-        }, 8_000));
-      } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-        if (pc.connectionState === 'failed' && configuredTurnServer.length === 0) {
-          console.warn('Conexão P2P falhou. Configure VITE_TURN_URLS e credenciais TURN para redes restritivas.');
-        }
-        this.removePeer(targetUserId);
+          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+            this.removePeer(targetUserId);
+          }
+        }, 12_000));
+      } else if (pc.connectionState === 'failed') {
+        console.warn(`[WebRTC] Peer ${targetUserId} failed, attempting final ICE restart...`);
+        void this.restartIce(targetUserId, pc);
       }
     };
 
     if (isInitiator) {
       try {
+        this.isMakingOffer.set(targetUserId, true);
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
@@ -492,50 +536,127 @@ class WebRTCManager {
           },
         });
       } catch (err) {
-        console.error('Failed to create offer for peer:', targetUserId, err);
+        console.error('[WebRTC] Failed to create offer for peer:', targetUserId, err);
+      } finally {
+        this.isMakingOffer.set(targetUserId, false);
       }
     }
 
     return pc;
   }
 
+  private async restartIce(targetUserId: string, pc: RTCPeerConnection) {
+    if (pc.connectionState === 'closed') return;
+    try {
+      this.isMakingOffer.set(targetUserId, true);
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      wsClient.send(WSEvents.RTC_SIGNAL, {
+        targetUserId,
+        channelId: this.currentChannelId,
+        signal: {
+          type: 'offer',
+          sdp: offer.sdp,
+        },
+      });
+    } catch (err) {
+      console.warn(`[WebRTC] ICE restart failed for ${targetUserId}:`, err);
+    } finally {
+      this.isMakingOffer.set(targetUserId, false);
+    }
+  }
+
   private async addTracksToPC(pc: RTCPeerConnection) {
-    const microphoneTransceiver = pc.addTransceiver('audio', { direction: 'sendrecv' });
-    const sharedAudioTransceiver = pc.addTransceiver('audio', { direction: 'sendrecv' });
-    const videoTransceiver = pc.addTransceiver('video', { direction: 'sendrecv' });
-    await microphoneTransceiver.sender.replaceTrack(this.localStream?.getAudioTracks()[0] ?? null);
-    await sharedAudioTransceiver.sender.replaceTrack(this.screenStream?.getAudioTracks()[0] ?? null);
-    await videoTransceiver.sender.replaceTrack(
-      this.screenStream?.getVideoTracks()[0] ?? this.localStream?.getVideoTracks()[0] ?? null,
-    );
+    const micTrack = this.localStream?.getAudioTracks()[0] ?? null;
+    const screenAudioTrack = this.screenStream?.getAudioTracks()[0] ?? null;
+    const videoTrack = this.screenStream?.getVideoTracks()[0] ?? this.localStream?.getVideoTracks()[0] ?? null;
+
+    const micTransceiver = pc.addTransceiver(micTrack ? micTrack : 'audio', {
+      direction: 'sendrecv',
+      streams: this.localStream ? [this.localStream] : [],
+    });
+    const sharedAudioTransceiver = pc.addTransceiver(screenAudioTrack ? screenAudioTrack : 'audio', {
+      direction: 'sendrecv',
+      streams: this.screenStream ? [this.screenStream] : [],
+    });
+    const videoTransceiver = pc.addTransceiver(videoTrack ? videoTrack : 'video', {
+      direction: 'sendrecv',
+      streams: this.screenStream ? [this.screenStream] : (this.localStream ? [this.localStream] : []),
+    });
+
+    if (micTrack && micTransceiver.sender.track !== micTrack) {
+      await micTransceiver.sender.replaceTrack(micTrack);
+    }
+    if (screenAudioTrack && sharedAudioTransceiver.sender.track !== screenAudioTrack) {
+      await sharedAudioTransceiver.sender.replaceTrack(screenAudioTrack);
+    }
+    if (videoTrack && videoTransceiver.sender.track !== videoTrack) {
+      await videoTransceiver.sender.replaceTrack(videoTrack);
+      await this.applyVideoSenderParameters(videoTransceiver.sender, Boolean(this.screenStream?.getVideoTracks()[0]));
+    }
+  }
+
+  private async applyVideoSenderParameters(sender: RTCRtpSender, isScreen: boolean) {
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      if (isScreen) {
+        // High quality screen sharing: 4 Mbps cap, maintain resolution for crisp text/code
+        params.encodings[0].maxBitrate = 4_000_000;
+        params.encodings[0].networkPriority = 'high';
+        params.degradationPreference = 'maintain-resolution';
+      } else {
+        // Camera streaming
+        params.encodings[0].maxBitrate = 1_500_000;
+        params.encodings[0].networkPriority = 'medium';
+        params.degradationPreference = 'balanced';
+      }
+      await sender.setParameters(params);
+    } catch {
+      // Browser might ignore specific parameter changes safely
+    }
   }
 
   private async updatePeerTracks(renegotiateVideo = false) {
     const microphoneTrack = this.localStream?.getAudioTracks()[0] ?? null;
     const sharedAudioTrack = this.screenStream?.getAudioTracks()[0] ?? null;
     const videoTrack = this.screenStream?.getVideoTracks()[0] ?? this.localStream?.getVideoTracks()[0] ?? null;
+    const isScreen = Boolean(this.screenStream?.getVideoTracks()[0]);
+
     for (const pc of this.peerConnections.values()) {
+      if (pc.connectionState === 'closed') continue;
+
       const audioSenders = pc.getTransceivers()
         .filter((item) => item.receiver.track.kind === 'audio')
         .map((item) => item.sender);
-      const videoSender = pc.getTransceivers().find((item) => item.receiver.track.kind === 'video')?.sender;
-      await audioSenders[0]?.replaceTrack(microphoneTrack);
-      await audioSenders[1]?.replaceTrack(sharedAudioTrack);
-      await videoSender?.replaceTrack(videoTrack);
+      const videoTransceiver = pc.getTransceivers().find((item) => item.receiver.track.kind === 'video');
+
+      if (audioSenders[0]) await audioSenders[0].replaceTrack(microphoneTrack);
+      if (audioSenders[1]) await audioSenders[1].replaceTrack(sharedAudioTrack);
+
+      if (videoTransceiver) {
+        await videoTransceiver.sender.replaceTrack(videoTrack);
+        if (videoTrack) {
+          await this.applyVideoSenderParameters(videoTransceiver.sender, isScreen);
+        }
+      }
     }
 
-    if (renegotiateVideo) await this.renegotiatePeers();
+    if (renegotiateVideo) {
+      await this.renegotiatePeers();
+    }
   }
 
   /**
-   * Re-offer after the video sender changes. Some Chromium/WebView versions do
-   * not begin forwarding a camera track that replaced an initially-null track
-   * until the media section is negotiated again.
+   * Re-offer to renegotiate media tracks with connected peers
    */
   private async renegotiatePeers(): Promise<void> {
     for (const [targetUserId, pc] of this.peerConnections) {
       if (pc.connectionState === 'closed' || pc.signalingState !== 'stable') continue;
       try {
+        this.isMakingOffer.set(targetUserId, true);
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         wsClient.send(WSEvents.RTC_SIGNAL, {
@@ -547,7 +668,9 @@ class WebRTCManager {
           },
         });
       } catch (error) {
-        console.warn('Falha ao renegociar a faixa de vídeo:', targetUserId, error);
+        console.warn('[WebRTC] Falha ao renegociar a faixa de vídeo:', targetUserId, error);
+      } finally {
+        this.isMakingOffer.set(targetUserId, false);
       }
     }
   }
@@ -556,7 +679,11 @@ class WebRTCManager {
     const queued = this.pendingIceCandidates.get(userId) ?? [];
     this.pendingIceCandidates.delete(userId);
     for (const candidate of queued) {
-      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (e) {
+        console.warn('[WebRTC] Failed to add pending ICE candidate:', e);
+      }
     }
   }
 

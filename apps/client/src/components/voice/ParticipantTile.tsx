@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Avatar } from '../common/Avatar.js';
 import { Maximize2, MicOff, Minimize2, Video, Monitor, Volume2, X } from 'lucide-react';
@@ -28,54 +28,92 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
   const usesNativeFullscreenRef = useRef(false);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [, setTrackVersion] = useState(0);
+
+  // Active listener on MediaStream tracks to dynamically catch newly unmuted or added video/audio tracks
+  useEffect(() => {
+    if (!mediaStream) return;
+
+    const handleTrackUpdate = () => {
+      setTrackVersion((v) => v + 1);
+    };
+
+    mediaStream.addEventListener('addtrack', handleTrackUpdate);
+    mediaStream.addEventListener('removetrack', handleTrackUpdate);
+
+    const tracks = mediaStream.getTracks();
+    tracks.forEach((track) => {
+      track.addEventListener('mute', handleTrackUpdate);
+      track.addEventListener('unmute', handleTrackUpdate);
+      track.addEventListener('ended', handleTrackUpdate);
+    });
+
+    return () => {
+      mediaStream.removeEventListener('addtrack', handleTrackUpdate);
+      mediaStream.removeEventListener('removetrack', handleTrackUpdate);
+      tracks.forEach((track) => {
+        track.removeEventListener('mute', handleTrackUpdate);
+        track.removeEventListener('unmute', handleTrackUpdate);
+        track.removeEventListener('ended', handleTrackUpdate);
+      });
+    };
+  }, [mediaStream]);
 
   const hasVideoTrack = Boolean(
     mediaStream &&
-    mediaStream.getVideoTracks().some((track) =>
-      track.readyState === 'live' && track.enabled
+    mediaStream.getVideoTracks().some(
+      (track) => track.readyState === 'live' && track.enabled
     )
   );
+
   const hasAudioTrack = Boolean(
-    mediaStream?.getAudioTracks().some((track) => track.readyState === 'live')
+    mediaStream &&
+    mediaStream.getAudioTracks().some(
+      (track) => track.readyState === 'live'
+    )
   );
+
+  const attachAndPlayVideo = useCallback((videoEl: HTMLVideoElement | null) => {
+    if (!videoEl) return;
+    if (mediaStream) {
+      if (videoEl.srcObject !== mediaStream) {
+        videoEl.srcObject = mediaStream;
+      }
+      videoEl.play().catch(() => undefined);
+    } else {
+      videoEl.srcObject = null;
+    }
+  }, [mediaStream]);
 
   // Sync video stream to regular tile
   useEffect(() => {
-    const video = videoRef.current;
-    if (video) {
-      video.srcObject = mediaStream ?? null;
-      if (mediaStream) void video.play().catch(() => undefined);
-    }
-    return () => {
-      if (video) video.srcObject = null;
-    };
-  }, [mediaStream, hasVideoTrack]);
+    attachAndPlayVideo(videoRef.current);
+  }, [attachAndPlayVideo, hasVideoTrack]);
 
   // Sync video stream to fullscreen portal
   useEffect(() => {
     if (!isFullscreen) return;
-    const fsVideo = fullscreenVideoRef.current;
-    if (fsVideo) {
-      fsVideo.srcObject = mediaStream ?? null;
-      if (mediaStream) void fsVideo.play().catch(() => undefined);
-    }
-    return () => {
-      if (fsVideo) fsVideo.srcObject = null;
-    };
-  }, [isFullscreen, mediaStream]);
+    attachAndPlayVideo(fullscreenVideoRef.current);
+  }, [isFullscreen, attachAndPlayVideo, hasVideoTrack]);
 
   // Audio output handler
   useEffect(() => {
     const audio = audioRef.current;
     if (audio) {
-      audio.srcObject = mediaStream ?? null;
-      const sinkAudio = audio as HTMLAudioElement & {
-        setSinkId?: (deviceId: string) => Promise<void>;
-      };
-      if (sinkAudio.setSinkId) {
-        void sinkAudio.setSinkId(audioOutputDeviceId || 'default').catch(() => undefined);
+      if (mediaStream && !isLocal && !muteAudio) {
+        if (audio.srcObject !== mediaStream) {
+          audio.srcObject = mediaStream;
+        }
+        const sinkAudio = audio as HTMLAudioElement & {
+          setSinkId?: (deviceId: string) => Promise<void>;
+        };
+        if (sinkAudio.setSinkId) {
+          void sinkAudio.setSinkId(audioOutputDeviceId || 'default').catch(() => undefined);
+        }
+        void audio.play().catch(() => undefined);
+      } else {
+        audio.srcObject = null;
       }
-      if (mediaStream && !isLocal && !muteAudio) void audio.play().catch(() => undefined);
     }
     return () => {
       if (audio) audio.srcObject = null;
@@ -139,8 +177,16 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
             : 'border-gdisc-bg-hover/80 hover:border-gdisc-brand-primary/40'
         }`}
       >
-        {hasAudioTrack && (
-          <audio ref={audioRef} autoPlay muted={isLocal || muteAudio} className="hidden" />
+        {hasAudioTrack && !isLocal && (
+          <audio
+            ref={audioRef}
+            autoPlay
+            muted={muteAudio}
+            onLoadedMetadata={(e) => {
+              void e.currentTarget.play().catch(() => undefined);
+            }}
+            className="hidden"
+          />
         )}
 
         {/* Video Element */}
@@ -150,12 +196,15 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
             autoPlay
             playsInline
             muted
+            onLoadedMetadata={(e) => {
+              void e.currentTarget.play().catch(() => undefined);
+            }}
             className={`w-full h-full ${
               participant.selfScreen ? 'object-contain bg-black' : 'object-cover'
             } rounded-2xl`}
           />
         ) : (
-          /* Avatar Display when camera is off */
+          /* Avatar Display when camera/screen is off */
           <div className="flex flex-col items-center justify-center p-6 text-center">
             <Avatar
               src={participant.user.avatarUrl}
@@ -235,6 +284,9 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
               autoPlay
               playsInline
               muted
+              onLoadedMetadata={(e) => {
+                void e.currentTarget.play().catch(() => undefined);
+              }}
               className="w-full h-full object-contain"
             />
 
