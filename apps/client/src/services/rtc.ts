@@ -1,6 +1,7 @@
 /**
  * GDisC WebRTC Realtime Mesh Engine
- * Robust, standard-compliant WebRTC P2P mesh engine.
+ * Reliable P2P engine with fixed Transceiver slots, in-place replaceTrack,
+ * and stable MediaStream management.
  */
 
 import { wsClient } from './ws.js';
@@ -25,7 +26,6 @@ const configuredTurnServer: RTCIceServer[] = turnUrls.length > 0 && turnUsername
   ? [{ urls: turnUrls, username: turnUsername, credential: turnCredential }]
   : [];
 
-// Standard, high-availability STUN and TURN servers
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -411,6 +411,15 @@ class WebRTCManager {
     this.notifyRemoteStreamsChanged();
   }
 
+  private ensureTransceivers(pc: RTCPeerConnection) {
+    const current = pc.getTransceivers();
+    if (current.length === 0) {
+      pc.addTransceiver('audio', { direction: 'sendrecv' });
+      pc.addTransceiver('audio', { direction: 'sendrecv' });
+      pc.addTransceiver('video', { direction: 'sendrecv' });
+    }
+  }
+
   private async createPeerConnection(targetUserId: string, isInitiator: boolean): Promise<RTCPeerConnection> {
     const existing = this.peerConnections.get(targetUserId);
     if (existing && existing.connectionState !== 'closed') return existing;
@@ -418,8 +427,10 @@ class WebRTCManager {
     const pc = new RTCPeerConnection(RTC_CONFIG);
     this.peerConnections.set(targetUserId, pc);
 
-    // Initial tracks synchronization
-    await this.syncTracksToPC(pc);
+    if (isInitiator) {
+      this.ensureTransceivers(pc);
+      await this.syncTracksToPC(pc);
+    }
 
     // ICE Candidate event
     pc.onicecandidate = (event) => {
@@ -435,26 +446,38 @@ class WebRTCManager {
       }
     };
 
-    // Remote Track event
+    // Remote Track event with stable user stream
     pc.ontrack = (event) => {
-      let stream = event.streams[0];
-      if (!stream) {
-        stream = this.remoteStreams.get(targetUserId) ?? new MediaStream();
-        if (!stream.getTracks().some((t) => t.id === event.track.id)) {
-          stream.addTrack(event.track);
-        }
+      let userStream = this.remoteStreams.get(targetUserId);
+      if (!userStream) {
+        userStream = new MediaStream();
+        this.remoteStreams.set(targetUserId, userStream);
       }
 
-      this.remoteStreams.set(targetUserId, stream);
-      this.notifyRemoteStreamsChanged();
+      // If a track of same kind already exists, replace it with the new live track
+      const existingSameKind = userStream.getTracks().find((t) => t.kind === event.track.kind);
+      if (existingSameKind && existingSameKind.id !== event.track.id) {
+        userStream.removeTrack(existingSameKind);
+      }
 
-      const refresh = () => {
+      if (!userStream.getTracks().some((t) => t.id === event.track.id)) {
+        userStream.addTrack(event.track);
+      }
+
+      const updateUI = () => {
         this.notifyRemoteStreamsChanged();
       };
 
-      event.track.onended = () => refresh();
-      event.track.onmute = () => refresh();
-      event.track.onunmute = () => refresh();
+      event.track.onended = () => {
+        if (userStream) {
+          userStream.removeTrack(event.track);
+          updateUI();
+        }
+      };
+      event.track.onmute = () => updateUI();
+      event.track.onunmute = () => updateUI();
+
+      updateUI();
     };
 
     // Connection state handler
@@ -506,35 +529,20 @@ class WebRTCManager {
     const activeVideoTrack = this.screenStream?.getVideoTracks()[0] ?? this.localStream?.getVideoTracks()[0] ?? null;
     const isScreen = Boolean(this.screenStream?.getVideoTracks()[0]);
 
-    const senders = pc.getSenders();
-    const audioSenders = senders.filter((s) => s.track?.kind === 'audio' || (!s.track && s.dtmf));
-    const videoSenders = senders.filter((s) => s.track?.kind === 'video');
+    const transceivers = pc.getTransceivers();
+    const audioTransceivers = transceivers.filter((t) => t.receiver.track.kind === 'audio');
+    const videoTransceiver = transceivers.find((t) => t.receiver.track.kind === 'video');
 
-    // Sync Audio (Mic)
-    if (audioSenders.length > 0 && audioSenders[0]) {
-      await audioSenders[0].replaceTrack(micTrack);
-    } else if (micTrack && this.localStream) {
-      pc.addTrack(micTrack, this.localStream);
+    if (audioTransceivers[0] && audioTransceivers[0].sender.track !== micTrack) {
+      await audioTransceivers[0].sender.replaceTrack(micTrack);
     }
-
-    // Sync Screen Audio
-    if (audioSenders.length > 1 && audioSenders[1]) {
-      await audioSenders[1].replaceTrack(screenAudioTrack);
-    } else if (screenAudioTrack && this.screenStream) {
-      pc.addTrack(screenAudioTrack, this.screenStream);
+    if (audioTransceivers[1] && audioTransceivers[1].sender.track !== screenAudioTrack) {
+      await audioTransceivers[1].sender.replaceTrack(screenAudioTrack);
     }
-
-    // Sync Video / Screen
-    if (videoSenders.length > 0 && videoSenders[0]) {
-      await videoSenders[0].replaceTrack(activeVideoTrack);
+    if (videoTransceiver && videoTransceiver.sender.track !== activeVideoTrack) {
+      await videoTransceiver.sender.replaceTrack(activeVideoTrack);
       if (activeVideoTrack) {
-        this.tuneVideoSender(videoSenders[0], isScreen);
-      }
-    } else if (activeVideoTrack) {
-      const stream = this.screenStream ?? this.localStream;
-      if (stream) {
-        const sender = pc.addTrack(activeVideoTrack, stream);
-        this.tuneVideoSender(sender, isScreen);
+        this.tuneVideoSender(videoTransceiver.sender, isScreen);
       }
     }
   }
@@ -546,7 +554,7 @@ class WebRTCManager {
         params.encodings = [{}];
       }
       if (isScreen) {
-        params.encodings[0].maxBitrate = 4_000_000;
+        params.encodings[0].maxBitrate = 3_500_000;
         params.encodings[0].networkPriority = 'high';
         params.degradationPreference = 'maintain-resolution';
       } else {
@@ -561,29 +569,12 @@ class WebRTCManager {
   }
 
   /**
-   * Updates all connected peers with current tracks and renegotiates if necessary
+   * Updates all connected peers with current tracks in-place
    */
   private async updateAllPeers() {
-    for (const [targetUserId, pc] of this.peerConnections) {
+    for (const [, pc] of this.peerConnections) {
       if (pc.connectionState === 'closed') continue;
       await this.syncTracksToPC(pc);
-
-      if (pc.signalingState === 'stable') {
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          wsClient.send(WSEvents.RTC_SIGNAL, {
-            targetUserId,
-            channelId: this.currentChannelId,
-            signal: {
-              type: 'offer',
-              sdp: offer.sdp,
-            },
-          });
-        } catch (err) {
-          console.warn('[WebRTC] Failed to renegotiate with peer:', targetUserId, err);
-        }
-      }
     }
   }
 

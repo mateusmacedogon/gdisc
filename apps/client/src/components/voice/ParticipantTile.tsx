@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Avatar } from '../common/Avatar.js';
 import { Maximize2, MicOff, Minimize2, Video, Monitor, Volume2, X } from 'lucide-react';
@@ -73,28 +73,28 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
     )
   );
 
-  const attachAndPlayVideo = useCallback((videoEl: HTMLVideoElement | null) => {
-    if (!videoEl) return;
-    if (mediaStream) {
-      if (videoEl.srcObject !== mediaStream) {
-        videoEl.srcObject = mediaStream;
-      }
-      videoEl.play().catch(() => undefined);
-    } else {
-      videoEl.srcObject = null;
-    }
-  }, [mediaStream]);
-
-  // Sync video stream to regular tile
+  // Sync video stream to regular tile without ever resetting srcObject to null prematurely
   useEffect(() => {
-    attachAndPlayVideo(videoRef.current);
-  }, [attachAndPlayVideo, hasVideoTrack]);
+    const video = videoRef.current;
+    if (video && mediaStream) {
+      if (video.srcObject !== mediaStream) {
+        video.srcObject = mediaStream;
+      }
+      void video.play().catch(() => undefined);
+    }
+  }, [mediaStream, hasVideoTrack]);
 
   // Sync video stream to fullscreen portal
   useEffect(() => {
     if (!isFullscreen) return;
-    attachAndPlayVideo(fullscreenVideoRef.current);
-  }, [isFullscreen, attachAndPlayVideo, hasVideoTrack]);
+    const fsVideo = fullscreenVideoRef.current;
+    if (fsVideo && mediaStream) {
+      if (fsVideo.srcObject !== mediaStream) {
+        fsVideo.srcObject = mediaStream;
+      }
+      void fsVideo.play().catch(() => undefined);
+    }
+  }, [isFullscreen, mediaStream, hasVideoTrack]);
 
   // Audio output handler
   useEffect(() => {
@@ -115,9 +115,6 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
         audio.srcObject = null;
       }
     }
-    return () => {
-      if (audio) audio.srcObject = null;
-    };
   }, [audioOutputDeviceId, mediaStream, hasAudioTrack, isLocal, muteAudio]);
 
   // Escape key closes fullscreen
@@ -177,7 +174,8 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
             : 'border-gdisc-bg-hover/80 hover:border-gdisc-brand-primary/40'
         }`}
       >
-        {hasAudioTrack && !isLocal && (
+        {/* Audio element for remote participant */}
+        {!isLocal && (
           <audio
             ref={audioRef}
             autoPlay
@@ -189,22 +187,22 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
           />
         )}
 
-        {/* Video Element */}
-        {hasVideoTrack ? (
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            onLoadedMetadata={(e) => {
-              void e.currentTarget.play().catch(() => undefined);
-            }}
-            className={`w-full h-full ${
-              participant.selfScreen ? 'object-contain bg-black' : 'object-cover'
-            } rounded-2xl`}
-          />
-        ) : (
-          /* Avatar Display when camera/screen is off */
+        {/* Video Element is PERMANENTLY mounted in the DOM to avoid teardown/blackouts */}
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          onLoadedMetadata={(e) => {
+            void e.currentTarget.play().catch(() => undefined);
+          }}
+          className={`w-full h-full ${
+            participant.selfScreen ? 'object-contain bg-black' : 'object-cover'
+          } rounded-2xl ${hasVideoTrack ? 'block' : 'hidden'}`}
+        />
+
+        {/* Avatar Display when video is inactive */}
+        {!hasVideoTrack && (
           <div className="flex flex-col items-center justify-center p-6 text-center">
             <Avatar
               src={participant.user.avatarUrl}
