@@ -1,7 +1,8 @@
 import React from 'react';
 import { useServerStore } from '../../stores/useServerStore.js';
 import { useUIStore } from '../../stores/useUIStore.js';
-import { Plus, Compass, Radio } from 'lucide-react';
+import { Plus, Compass, Radio, Download } from 'lucide-react';
+import { isWeb } from '../../utils/platform.js';
 
 export const ServerSidebar: React.FC = () => {
   const { servers, activeServerId, selectServer } = useServerStore();
@@ -124,6 +125,22 @@ export const ServerSidebar: React.FC = () => {
             <Compass className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Download Apps Button (Visible ONLY on Web version) */}
+        {isWeb && (
+          <div className="relative group mt-auto pt-2">
+            <button
+              type="button"
+              onClick={() => openModal('download_apps')}
+              title="Baixar Aplicativo para Windows ou Android"
+              aria-label="Baixar aplicativo GDisC"
+              className="w-12 h-12 rounded-3xl hover:rounded-2xl bg-gdisc-bg-card hover:bg-gdisc-brand-primary text-gdisc-brand-secondary hover:text-white flex items-center justify-center transition-all duration-200 shadow-md group-hover:shadow-gdisc-glow relative"
+            >
+              <Download className="w-5 h-5" />
+              <span className="absolute -top-1 -right-1 w-3 h-3 bg-gdisc-brand-primary rounded-full ring-2 ring-gdisc-bg-primary animate-pulse" />
+            </button>
+          </div>
+        )}
       </div>
     </aside>
   );

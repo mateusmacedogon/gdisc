@@ -6,8 +6,9 @@ import { useServerStore } from '../../stores/useServerStore.js';
 import { useAuthStore } from '../../stores/useAuthStore.js';
 import { MessageItem } from './MessageItem.js';
 import { MessageInput } from './MessageInput.js';
-import { Compass, Hash, Loader2, MessageSquare, Plus, Radio, RefreshCw, Users } from 'lucide-react';
+import { Compass, Hash, Loader2, MessageSquare, Plus, Radio, RefreshCw, Users, Download } from 'lucide-react';
 import { PermissionFlags, hasPermission } from '@gdisc/shared';
+import { isWeb } from '../../utils/platform.js';
 
 export const ChatArea: React.FC = () => {
   const { activeChannel, isLoading: channelsLoading } = useChannelStore();
@@ -194,6 +195,19 @@ export const ChatArea: React.FC = () => {
 
         {/* Header Right Actions */}
         <div className="flex items-center gap-1">
+          {isWeb && (
+            <button
+              type="button"
+              onClick={() => openModal('download_apps')}
+              title="Baixar Aplicativo GDisC (Windows / Android)"
+              aria-label="Baixar Aplicativo GDisC"
+              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gdisc-brand-primary/10 hover:bg-gdisc-brand-primary/20 text-gdisc-brand-secondary text-xs font-semibold transition-colors mr-1 border border-gdisc-brand-primary/20 shadow-sm"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Baixar App</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={toggleMobileMemberList}

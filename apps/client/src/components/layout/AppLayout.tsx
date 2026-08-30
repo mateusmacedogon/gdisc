@@ -15,6 +15,7 @@ import { UserSettingsModal } from '../user/UserSettingsModal.js';
 import { DeviceSettingsModal } from '../voice/DeviceSettingsModal.js';
 import { ScreenShareModal } from '../voice/ScreenShareModal.js';
 import { QuickSwitcherModal } from '../common/QuickSwitcherModal.js';
+import { DownloadModal } from '../common/DownloadModal.js';
 import { Menu, X } from 'lucide-react';
 
 import { useServerStore } from '../../stores/useServerStore.js';
@@ -371,6 +372,7 @@ export const AppLayout: React.FC = () => {
       <DeviceSettingsModal />
       <ScreenShareModal />
       <QuickSwitcherModal />
+      <DownloadModal />
 
       {/* Toast Alerts */}
       <ToastContainer />
