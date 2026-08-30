@@ -10,8 +10,8 @@ export const DownloadModal: React.FC = () => {
   if (!isOpen) return null;
 
   const githubReleasesUrl = 'https://github.com/mateusmacedogon/gdisc/releases';
-  const windowsDownloadUrl = 'https://github.com/mateusmacedogon/gdisc/releases/latest/download/GDisC-1.0.0-x64.exe';
-  const androidDownloadUrl = 'https://github.com/mateusmacedogon/gdisc/releases/latest/download/GDisC-1.0.0-debug.apk';
+  const windowsDownloadUrl = 'https://github.com/mateusmacedogon/gdisc/releases/download/a/GDisC-1.0.0-x64.exe';
+  const androidDownloadUrl = 'https://github.com/mateusmacedogon/gdisc/releases/download/b/GDisC-1.0.0-debug.apk';
 
   return (
     <Modal
