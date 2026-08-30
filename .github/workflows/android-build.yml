@@ -22,20 +22,24 @@ jobs:
       - name: Set up Java JDK
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          distribution: 'temurin'
           java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
 
       - name: Install Dependencies
-        run: npm ci
+        run: npm install --ignore-scripts --no-audit --prefer-offline
 
-      - name: Build Web Client Assets
-        run: npm run build:client
+      - name: Build Shared & Web Client
+        run: |
+          npm run build:shared
+          npm run build:client
 
       - name: Generate Android Icons
         run: node scripts/generate-android-icons.mjs
@@ -49,9 +53,9 @@ jobs:
         run: |
           cd apps/mobile/android
           chmod +x ./gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --no-daemon
 
-      - name: Copy APK to Output
+      - name: Prepare APK Output
         run: |
           mkdir -p dist-android
           cp apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk dist-android/GDisC-1.0.0-debug.apk
