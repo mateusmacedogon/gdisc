@@ -1,0 +1,71 @@
+name: Build Android APK
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Web Client Assets
+        run: npm run build:client
+
+      - name: Generate Android Icons
+        run: node scripts/generate-android-icons.mjs
+
+      - name: Sync Capacitor Android
+        run: |
+          cd apps/mobile
+          npx cap sync android
+
+      - name: Build Android Debug APK with Gradle
+        run: |
+          cd apps/mobile/android
+          chmod +x ./gradlew
+          ./gradlew assembleDebug
+
+      - name: Copy APK to Output
+        run: |
+          mkdir -p dist-android
+          cp apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk dist-android/GDisC-1.0.0-debug.apk
+
+      - name: Upload Android APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdisc-android-apk
+          path: dist-android/GDisC-1.0.0-debug.apk
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-android/GDisC-1.0.0-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
