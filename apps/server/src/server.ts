@@ -59,15 +59,18 @@ async function bootstrap() {
     // 3. Setup WebSocket Gateway
     setupWebSocket(fastify);
 
-    // 4. Register Healthcheck
-    fastify.get('/api/health', async () => {
-      return {
-        status: 'ok',
-        app: 'GDisC Server',
-        version: '1.0.0',
-        timestamp: new Date().toISOString(),
-      };
+    // 4. Register Healthcheck & Metrics
+    const getHealthData = () => ({
+      status: 'ok',
+      app: 'GDisC Server',
+      version: '1.0.0',
+      uptimeSeconds: Math.floor(process.uptime()),
+      memory: process.memoryUsage(),
+      timestamp: new Date().toISOString(),
     });
+
+    fastify.get('/health', async () => getHealthData());
+    fastify.get('/api/health', async () => getHealthData());
 
     // 5. Register REST Module Routes
     await fastify.register(authRoutes, { prefix: '/api/auth' });

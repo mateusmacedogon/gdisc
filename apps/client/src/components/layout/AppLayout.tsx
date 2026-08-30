@@ -22,10 +22,15 @@ import { useChatStore } from '../../stores/useChatStore.js';
 import { useVoiceStore } from '../../stores/useVoiceStore.js';
 import { useAuthStore } from '../../stores/useAuthStore.js';
 import { useUIStore } from '../../stores/useUIStore.js';
+import { useGlobalShortcuts } from '../../hooks/useGlobalShortcuts.js';
+import { useAndroidBackHandler } from '../../hooks/useAndroidBackHandler.js';
 import { wsClient } from '../../services/ws.js';
 import { WSEvents } from '@gdisc/shared';
 
 export const AppLayout: React.FC = () => {
+  useGlobalShortcuts();
+  useAndroidBackHandler();
+
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const {
     activeServer,

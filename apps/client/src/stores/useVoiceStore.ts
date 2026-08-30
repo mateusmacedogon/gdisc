@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { wsClient } from '../services/ws.js';
 import { rtcManager, type ScreenShareOptions } from '../services/rtc.js';
 import { AudioActivityDetector } from '../services/audioMeter.js';
+import { sounds } from '../services/soundEffects.js';
 import { useAuthStore } from './useAuthStore.js';
 import { WSEvents, type VoiceState, type UserSummary, type RTCSignalPayload } from '@gdisc/shared';
 
@@ -101,6 +102,8 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
           isSpeaking: speaking,
         });
       });
+
+      sounds.playJoin();
     } catch (err) {
       console.error('Error joining voice:', err);
       vad.stop();
@@ -121,6 +124,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   },
 
   leaveVoice: async () => {
+    sounds.playLeave();
     vad.stop();
     rtcManager.leaveAll();
 
@@ -139,6 +143,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
 
   toggleMute: () => {
     const nextMuted = !get().isMuted;
+    sounds.playMute(nextMuted);
     rtcManager.toggleMute(nextMuted);
     set({ isMuted: nextMuted });
 
@@ -153,6 +158,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
 
   toggleDeaf: () => {
     const nextDeaf = !get().isDeafened;
+    sounds.playMute(nextDeaf);
     // When deafened, also mute
     const nextMute = nextDeaf ? true : get().isMuted;
     rtcManager.toggleMute(nextMute);

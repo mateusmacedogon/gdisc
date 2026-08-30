@@ -3,6 +3,7 @@ import { useAuthStore } from '../../stores/useAuthStore.js';
 import { useChatStore } from '../../stores/useChatStore.js';
 import { useUIStore } from '../../stores/useUIStore.js';
 import { Avatar } from '../common/Avatar.js';
+import { MarkdownContent } from './MarkdownContent.js';
 import { Reply, Edit3, Trash2, CornerDownRight, MoreHorizontal } from 'lucide-react';
 import type { MessageSummary } from '@gdisc/shared';
 
@@ -131,7 +132,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
             </div>
           ) : (
             <div className="text-sm text-gdisc-text-primary whitespace-pre-wrap break-words leading-relaxed select-text">
-              {message.content}
+              <MarkdownContent content={message.content} />
             </div>
           )}
         </div>
