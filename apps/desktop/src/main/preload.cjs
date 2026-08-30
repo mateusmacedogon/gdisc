@@ -32,6 +32,10 @@ const electronAPI = {
   getScreenSources: () => {
     return ipcRenderer.invoke('get-screen-sources');
   },
+
+  selectScreenSource: (sourceId) => {
+    return ipcRenderer.invoke('select-screen-source', sourceId);
+  },
 };
 
 try {

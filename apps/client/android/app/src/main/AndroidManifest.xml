@@ -16,7 +16,7 @@
     <!-- Feature definitions -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
-    <uses-feature android:name="android.hardware.microphone" android:required="true" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application
         android:allowBackup="false"
@@ -33,11 +33,26 @@
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
             android:exported="true">
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="gdisc-client.vercel.app" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="gdisc" android:host="invite" />
             </intent-filter>
 
         </activity>

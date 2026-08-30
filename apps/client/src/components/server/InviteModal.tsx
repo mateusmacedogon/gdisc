@@ -3,8 +3,10 @@ import { Modal } from '../common/Modal.js';
 import { useUIStore } from '../../stores/useUIStore.js';
 import { useServerStore } from '../../stores/useServerStore.js';
 import { api } from '../../services/api.js';
-import { Copy, Check, Link, Compass, Sparkles } from 'lucide-react';
+import { Copy, Check, Compass, Sparkles } from 'lucide-react';
 import type { InviteSummary } from '@gdisc/shared';
+import { copyToClipboard } from '../../utils/clipboard.js';
+import { getPublicAppUrl } from '../../utils/platform.js';
 
 export const InviteModal: React.FC = () => {
   const { activeModal, modalData, closeModal, addToast } = useUIStore();
@@ -49,9 +51,9 @@ export const InviteModal: React.FC = () => {
   }, [isJoinMode, modalData?.inviteCode]);
 
   const handleCopy = async () => {
-    const inviteUrl = `${window.location.origin}/#invite=${inviteCode}`;
+    const inviteUrl = `${getPublicAppUrl()}/#invite=${encodeURIComponent(inviteCode)}`;
     try {
-      await navigator.clipboard.writeText(inviteUrl);
+      await copyToClipboard(inviteUrl);
       setCopied(true);
       addToast('Link de convite copiado!', 'success');
       setTimeout(() => setCopied(false), 2500);

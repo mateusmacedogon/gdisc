@@ -5,6 +5,7 @@
 
 import { wsClient } from './ws.js';
 import { WSEvents, type RTCSignalPayload } from '@gdisc/shared';
+import { platformCapabilities } from '../utils/platform.js';
 
 type ViteRuntimeEnv = Record<string, string | boolean | undefined>;
 const runtimeEnv = (import.meta as ImportMeta & { readonly env?: ViteRuntimeEnv }).env;
@@ -60,9 +61,14 @@ class WebRTCManager {
   private currentChannelId: string | null = null;
   private localUserId: string | null = null;
   private onRemoteStreamsChanged: RemoteStreamCallback | null = null;
+  private onScreenShareEnded: (() => void) | null = null;
 
   public setRemoteStreamCallback(cb: RemoteStreamCallback) {
     this.onRemoteStreamsChanged = cb;
+  }
+
+  public setScreenShareEndedCallback(cb: (() => void) | null) {
+    this.onScreenShareEnded = cb;
   }
 
   /**
@@ -74,7 +80,9 @@ class WebRTCManager {
     audioDeviceId?: string,
     videoDeviceId?: string
   ): Promise<MediaStream> {
-    this.stopLocalMedia();
+    if (!platformCapabilities.camera) {
+      throw new Error('Este dispositivo não oferece acesso a microfone ou câmera neste aplicativo.');
+    }
 
     const constraints: MediaStreamConstraints = {
       audio: audio
@@ -95,28 +103,69 @@ class WebRTCManager {
         : false,
     };
 
+    let nextStream: MediaStream;
     try {
-      this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
-      await this.updatePeerTracks(video);
-      return this.localStream;
+      nextStream = await navigator.mediaDevices.getUserMedia(constraints);
     } catch (err) {
-      console.warn('getUserMedia failed with requested constraints, falling back to basic audio:', err);
+      console.warn('getUserMedia failed with requested constraints, falling back to the default microphone:', err);
+      if (!audio) throw this.createMediaError(err, 'Não foi possível acessar a câmera.');
       try {
-        this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        await this.updatePeerTracks(video);
-        return this.localStream;
+        nextStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          video: false,
+        });
       } catch (fallbackErr) {
-        console.error('Failed to get any user media:', fallbackErr);
-        this.localStream = new MediaStream();
-        return this.localStream;
+        console.error('Failed to get user media:', fallbackErr);
+        throw this.createMediaError(fallbackErr, 'Não foi possível acessar o microfone.');
       }
     }
+
+    const previousStream = this.localStream;
+    this.localStream = nextStream;
+    previousStream?.getTracks().forEach((track) => track.stop());
+    await this.updatePeerTracks(video);
+    return nextStream;
+  }
+
+  public async switchAudioInput(deviceId?: string): Promise<MediaStream> {
+    if (!platformCapabilities.camera) {
+      throw new Error('A seleção de microfone não é suportada neste dispositivo.');
+    }
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        },
+        video: false,
+      });
+    } catch (error) {
+      throw this.createMediaError(error, 'Não foi possível trocar o microfone.');
+    }
+
+    const nextAudioTrack = stream.getAudioTracks()[0];
+    if (!nextAudioTrack) throw new Error('O microfone selecionado não forneceu áudio.');
+    if (!this.localStream) this.localStream = new MediaStream();
+    this.localStream.getAudioTracks().forEach((track) => {
+      track.stop();
+      this.localStream?.removeTrack(track);
+    });
+    this.localStream.addTrack(nextAudioTrack);
+    await this.updatePeerTracks(false);
+    return this.localStream;
   }
 
   /**
    * Starts screen capture via desktop source or getDisplayMedia
    */
   public async startScreenShare(options?: ScreenShareOptions): Promise<MediaStream | null> {
+    if (!platformCapabilities.screenShare) {
+      throw new Error('O compartilhamento de tela não é suportado neste dispositivo. Use o site ou o aplicativo para Windows.');
+    }
     try {
       const fps = options?.fps ?? 30;
       let width = 1920;
@@ -174,7 +223,7 @@ class WebRTCManager {
       const videoTrack = this.screenStream.getVideoTracks()[0];
       if (videoTrack) {
         videoTrack.onended = () => {
-          void this.stopScreenShare();
+          void this.stopScreenShare().finally(() => this.onScreenShareEnded?.());
         };
       }
 
@@ -182,13 +231,16 @@ class WebRTCManager {
       return this.screenStream;
     } catch (err) {
       console.error('Error starting screen share:', err);
-      return null;
+      throw this.createMediaError(err, 'Não foi possível iniciar o compartilhamento de tela.');
     }
   }
 
   public async stopScreenShare(): Promise<void> {
     if (this.screenStream) {
-      this.screenStream.getTracks().forEach((t) => t.stop());
+      this.screenStream.getTracks().forEach((track) => {
+        track.onended = null;
+        track.stop();
+      });
       this.screenStream = null;
     }
     await this.updatePeerTracks(true);
@@ -339,7 +391,10 @@ class WebRTCManager {
   public leaveAll() {
     this.stopLocalMedia();
     if (this.screenStream) {
-      this.screenStream.getTracks().forEach((track) => track.stop());
+      this.screenStream.getTracks().forEach((track) => {
+        track.onended = null;
+        track.stop();
+      });
       this.screenStream = null;
     }
 
@@ -363,8 +418,8 @@ class WebRTCManager {
     const pc = new RTCPeerConnection(RTC_CONFIG);
     this.peerConnections.set(targetUserId, pc);
 
-    // Reserve audio and video transceivers up front. Camera and screen tracks
-    // can then be replaced later without requiring a second negotiation.
+    // Reserve microphone, shared-system-audio and video transceivers up front.
+    // Tracks can then be replaced later without changing their ordering.
     await this.addTracksToPC(pc);
 
     // ICE Candidate handler
@@ -445,21 +500,27 @@ class WebRTCManager {
   }
 
   private async addTracksToPC(pc: RTCPeerConnection) {
-    const audioTransceiver = pc.addTransceiver('audio', { direction: 'sendrecv' });
+    const microphoneTransceiver = pc.addTransceiver('audio', { direction: 'sendrecv' });
+    const sharedAudioTransceiver = pc.addTransceiver('audio', { direction: 'sendrecv' });
     const videoTransceiver = pc.addTransceiver('video', { direction: 'sendrecv' });
-    await audioTransceiver.sender.replaceTrack(this.localStream?.getAudioTracks()[0] ?? null);
+    await microphoneTransceiver.sender.replaceTrack(this.localStream?.getAudioTracks()[0] ?? null);
+    await sharedAudioTransceiver.sender.replaceTrack(this.screenStream?.getAudioTracks()[0] ?? null);
     await videoTransceiver.sender.replaceTrack(
       this.screenStream?.getVideoTracks()[0] ?? this.localStream?.getVideoTracks()[0] ?? null,
     );
   }
 
   private async updatePeerTracks(renegotiateVideo = false) {
-    const audioTrack = this.localStream?.getAudioTracks()[0] ?? null;
+    const microphoneTrack = this.localStream?.getAudioTracks()[0] ?? null;
+    const sharedAudioTrack = this.screenStream?.getAudioTracks()[0] ?? null;
     const videoTrack = this.screenStream?.getVideoTracks()[0] ?? this.localStream?.getVideoTracks()[0] ?? null;
     for (const pc of this.peerConnections.values()) {
-      const audioSender = pc.getTransceivers().find((item) => item.receiver.track.kind === 'audio')?.sender;
+      const audioSenders = pc.getTransceivers()
+        .filter((item) => item.receiver.track.kind === 'audio')
+        .map((item) => item.sender);
       const videoSender = pc.getTransceivers().find((item) => item.receiver.track.kind === 'video')?.sender;
-      await audioSender?.replaceTrack(audioTrack);
+      await audioSenders[0]?.replaceTrack(microphoneTrack);
+      await audioSenders[1]?.replaceTrack(sharedAudioTrack);
       await videoSender?.replaceTrack(videoTrack);
     }
 
@@ -510,6 +571,21 @@ class WebRTCManager {
     if (this.onRemoteStreamsChanged) {
       this.onRemoteStreamsChanged(new Map(this.remoteStreams));
     }
+  }
+
+  private createMediaError(error: unknown, fallback: string): Error {
+    if (error instanceof DOMException) {
+      if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
+        return new Error(`${fallback} Autorize a permissão nas configurações do navegador ou aplicativo.`);
+      }
+      if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+        return new Error(`${fallback} Nenhum dispositivo compatível foi encontrado.`);
+      }
+      if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+        return new Error(`${fallback} O dispositivo pode estar sendo usado por outro aplicativo.`);
+      }
+    }
+    return new Error(fallback);
   }
 
   public getLocalStream(): MediaStream | null {

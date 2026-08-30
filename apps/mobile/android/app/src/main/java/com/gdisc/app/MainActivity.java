@@ -1,8 +1,6 @@
 package com.gdisc.app;
 
 import android.os.Bundle;
-import android.webkit.PermissionRequest;
-import android.webkit.WebChromeClient;
 import android.webkit.WebView;
 import com.getcapacitor.BridgeActivity;
 

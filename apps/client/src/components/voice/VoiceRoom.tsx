@@ -21,6 +21,7 @@ export const VoiceRoom: React.FC = () => {
     isVideoOn,
     isScreenSharing,
     isSpeaking,
+    selectedAudioOutputId,
   } = useVoiceStore();
 
   const channelParticipants: VoiceState[] = activeChannel
@@ -98,7 +99,7 @@ export const VoiceRoom: React.FC = () => {
           /* Spotlight Layout when screen is being shared */
           <div className="w-full h-full flex flex-col md:flex-row gap-4 max-w-7xl">
             {/* Main Spotlight Screen */}
-            <div className="flex-1 h-full min-h-[360px]">
+            <div className="min-h-[220px] flex-1 sm:min-h-[360px]">
               <ParticipantTile
                 participant={screenSharer}
                 isLocal={screenSharer.userId === user?.id}
@@ -109,6 +110,7 @@ export const VoiceRoom: React.FC = () => {
                 }
                 isScreenShareSpotlight={true}
                 muteAudio={isDeafened}
+                audioOutputDeviceId={selectedAudioOutputId}
               />
             </div>
 
@@ -121,12 +123,13 @@ export const VoiceRoom: React.FC = () => {
                   const stream = isLocal ? localStream : remoteStreams.get(p.userId);
 
                   return (
-                    <div key={p.userId} className="h-40 shrink-0">
+                    <div key={p.userId} className="h-40 w-56 shrink-0 md:w-full">
                       <ParticipantTile
                         participant={p}
                         isLocal={isLocal}
                         mediaStream={stream}
                         muteAudio={isDeafened}
+                        audioOutputDeviceId={selectedAudioOutputId}
                       />
                     </div>
                   );
@@ -151,6 +154,7 @@ export const VoiceRoom: React.FC = () => {
                     isLocal={isLocal}
                     mediaStream={stream}
                     muteAudio={isDeafened}
+                    audioOutputDeviceId={selectedAudioOutputId}
                   />
                 </div>
               );

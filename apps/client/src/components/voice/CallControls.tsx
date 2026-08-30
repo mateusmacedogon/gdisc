@@ -12,6 +12,7 @@ import {
   Sliders,
   Loader2,
 } from 'lucide-react';
+import { platformCapabilities } from '../../utils/platform.js';
 
 export const CallControls: React.FC = () => {
   const {
@@ -68,8 +69,15 @@ export const CallControls: React.FC = () => {
         {/* Toggle Camera */}
         <button
           type="button"
-          onClick={() => void runAction('camera', toggleVideo, 'Não foi possível alterar a câmera.')}
+          onClick={() => {
+            if (!platformCapabilities.camera) {
+              addToast('A câmera não é suportada neste dispositivo.', 'info');
+              return;
+            }
+            void runAction('camera', toggleVideo, 'Não foi possível alterar a câmera.');
+          }}
           disabled={pendingAction !== null}
+          aria-disabled={!platformCapabilities.camera}
           aria-label={isVideoOn ? 'Desligar câmera' : 'Ligar câmera'}
           aria-pressed={isVideoOn}
           title={isVideoOn ? 'Desligar Câmera' : 'Ligar Câmera'}
@@ -88,18 +96,27 @@ export const CallControls: React.FC = () => {
           onClick={() => {
             if (isScreenSharing) {
               void runAction('screen', () => toggleScreenShare(), 'Não foi possível parar o compartilhamento.');
+            } else if (!platformCapabilities.screenShare) {
+              addToast('O compartilhamento de tela não está disponível no Android. Use o site ou o aplicativo para Windows.', 'info');
             } else {
               openModal('screen_share');
             }
           }}
           disabled={pendingAction !== null}
+          aria-disabled={!isScreenSharing && !platformCapabilities.screenShare}
           aria-label={isScreenSharing ? 'Parar compartilhamento de tela' : 'Compartilhar tela'}
           aria-pressed={isScreenSharing}
-          title={isScreenSharing ? 'Parar Compartilhamento' : 'Compartilhar Tela (Opções)'}
+          title={isScreenSharing
+            ? 'Parar Compartilhamento'
+            : platformCapabilities.screenShare
+              ? 'Compartilhar Tela (Opções)'
+              : 'Compartilhamento indisponível neste dispositivo'}
           className={`flex min-h-11 min-w-11 items-center justify-center rounded-xl transition-all shadow-md disabled:opacity-50 ${
             isScreenSharing
               ? 'bg-gdisc-success text-white hover:opacity-90'
-              : 'bg-gdisc-bg-secondary text-gdisc-text-primary hover:bg-gdisc-bg-hover hover:text-white'
+              : platformCapabilities.screenShare
+                ? 'bg-gdisc-bg-secondary text-gdisc-text-primary hover:bg-gdisc-bg-hover hover:text-white'
+                : 'bg-gdisc-bg-secondary text-gdisc-text-muted opacity-60'
           }`}
         >
           {pendingAction === 'screen' ? <Loader2 className="h-5 w-5 animate-spin" /> : isScreenSharing ? <MonitorOff className="w-5 h-5" /> : <Monitor className="w-5 h-5" />}

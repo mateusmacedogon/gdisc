@@ -240,10 +240,22 @@ export const AppLayout: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    const encodedInvite = window.location.hash.match(/^#invite=(.+)$/)?.[1];
-    if (!encodedInvite) return;
-    openModal('join_invite', { inviteCode: decodeURIComponent(encodedInvite) });
-    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    const handleInviteHash = () => {
+      const encodedInvite = window.location.hash.match(/^#invite=(.+)$/)?.[1];
+      if (!encodedInvite) return;
+      let inviteCode = encodedInvite;
+      try {
+        inviteCode = decodeURIComponent(encodedInvite);
+      } catch {
+        // Keep the raw code so a malformed external link cannot crash the app.
+      }
+      openModal('join_invite', { inviteCode });
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    };
+
+    handleInviteHash();
+    window.addEventListener('hashchange', handleInviteHash);
+    return () => window.removeEventListener('hashchange', handleInviteHash);
   }, [openModal]);
 
   // Mobile drawers can always be dismissed from a hardware or desktop keyboard.

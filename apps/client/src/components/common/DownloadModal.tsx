@@ -10,8 +10,8 @@ export const DownloadModal: React.FC = () => {
   if (!isOpen) return null;
 
   const githubReleasesUrl = 'https://github.com/mateusmacedogon/gdisc/releases';
-  const windowsDownloadUrl = 'https://github.com/mateusmacedogon/gdisc/releases/download/a/GDisC-1.0.0-x64.exe';
-  const androidDownloadUrl = 'https://github.com/mateusmacedogon/gdisc/releases/download/b/GDisC-1.0.0-debug.apk';
+  const windowsDownloadUrl = 'https://github.com/mateusmacedogon/gdisc/releases/latest/download/GDisC-1.0.0-x64.exe';
+  const androidDownloadUrl = 'https://github.com/mateusmacedogon/gdisc/releases/latest/download/GDisC-1.0.0-debug.apk';
 
   return (
     <Modal
@@ -22,7 +22,7 @@ export const DownloadModal: React.FC = () => {
     >
       <div className="space-y-6">
         <p className="text-sm text-gdisc-text-secondary">
-          Tenha a melhor experiência com menor latência de voz, atalhos de teclado e compartilhamento de tela avançado instalando o GDisC no seu dispositivo.
+          Instale o GDisC para manter uma janela dedicada, usar os controles nativos do Windows e ter uma experiência adaptada ao Android.
         </p>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -37,12 +37,12 @@ export const DownloadModal: React.FC = () => {
                 Windows
               </h3>
               <p className="text-xs text-gdisc-text-muted mb-4">
-                Compatível com Windows 10 e Windows 11 (64-bit). Inclui suporte a atalhos globais de microfone e compartilhamento com som nativo.
+                Compatível com Windows 10 e Windows 11 (64-bit), com controles de janela, bandeja do sistema e seleção nativa de tela ou aplicativo.
               </p>
 
               <div className="flex items-center gap-2 text-[11px] text-gdisc-success mb-4 font-medium">
                 <ShieldCheck className="w-3.5 h-3.5" />
-                <span>Binário assinado digitalmente</span>
+                <span>Aplicativo portátil para Windows 64-bit</span>
               </div>
             </div>
 
@@ -68,7 +68,7 @@ export const DownloadModal: React.FC = () => {
                 Android
               </h3>
               <p className="text-xs text-gdisc-text-muted mb-4">
-                Compatível com Android 8.0+. Suporte a chamadas de voz e vídeo com tela bloqueada, teclado adaptativo e notificações.
+                Compatível com Android 8.0+. Suporte a chat, chamadas de voz e vídeo, teclado adaptativo e retomada automática da conexão.
               </p>
 
               <div className="flex items-center gap-2 text-[11px] text-gdisc-brand-secondary mb-4 font-medium">
@@ -90,7 +90,7 @@ export const DownloadModal: React.FC = () => {
         </div>
 
         <div className="pt-2 flex items-center justify-between text-xs text-gdisc-text-muted border-t border-gdisc-bg-hover/50">
-          <span>Versão estável 1.0.0</span>
+          <span>Versão atual 1.0.0</span>
           <a
             href={githubReleasesUrl}
             target="_blank"

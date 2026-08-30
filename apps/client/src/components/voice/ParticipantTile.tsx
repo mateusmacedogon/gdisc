@@ -10,6 +10,7 @@ interface ParticipantTileProps {
   mediaStream?: MediaStream | null;
   isScreenShareSpotlight?: boolean;
   muteAudio?: boolean;
+  audioOutputDeviceId?: string;
 }
 
 export const ParticipantTile: React.FC<ParticipantTileProps> = ({
@@ -18,11 +19,13 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
   mediaStream,
   isScreenShareSpotlight = false,
   muteAudio = false,
+  audioOutputDeviceId,
 }) => {
   const tileRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const fullscreenVideoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const usesNativeFullscreenRef = useRef(false);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -66,12 +69,18 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
     const audio = audioRef.current;
     if (audio) {
       audio.srcObject = mediaStream ?? null;
+      const sinkAudio = audio as HTMLAudioElement & {
+        setSinkId?: (deviceId: string) => Promise<void>;
+      };
+      if (sinkAudio.setSinkId) {
+        void sinkAudio.setSinkId(audioOutputDeviceId || 'default').catch(() => undefined);
+      }
       if (mediaStream && !isLocal && !muteAudio) void audio.play().catch(() => undefined);
     }
     return () => {
       if (audio) audio.srcObject = null;
     };
-  }, [mediaStream, hasAudioTrack, isLocal, muteAudio]);
+  }, [audioOutputDeviceId, mediaStream, hasAudioTrack, isLocal, muteAudio]);
 
   // Escape key closes fullscreen
   useEffect(() => {
@@ -88,9 +97,21 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isFullscreen]);
 
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      if (usesNativeFullscreenRef.current && !document.fullscreenElement) {
+        usesNativeFullscreenRef.current = false;
+        setIsFullscreen(false);
+      }
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
   const toggleFullscreen = async () => {
     if (isFullscreen) {
       setIsFullscreen(false);
+      usesNativeFullscreenRef.current = false;
       if (document.fullscreenElement) {
         await document.exitFullscreen().catch(() => undefined);
       }
@@ -99,6 +120,7 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
       try {
         if (document.documentElement.requestFullscreen) {
           await document.documentElement.requestFullscreen();
+          usesNativeFullscreenRef.current = true;
         }
       } catch {
         // Fallback portal active
@@ -161,7 +183,7 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
             }}
             aria-label="Exibir transmissão em tela cheia"
             title="Tela cheia (ou clique duplo)"
-            className="absolute left-3 top-3 z-20 flex min-h-9 min-w-9 items-center justify-center rounded-xl border border-white/15 bg-black/60 text-white shadow-lg backdrop-blur-md transition-all hover:bg-black/90 hover:scale-105 active:scale-95"
+            className="absolute left-3 top-3 z-20 flex min-h-11 min-w-11 items-center justify-center rounded-xl border border-white/15 bg-black/60 text-white shadow-lg backdrop-blur-md transition-all hover:scale-105 hover:bg-black/90 active:scale-95 sm:min-h-9 sm:min-w-9"
           >
             <Maximize2 className="h-4 w-4" />
           </button>
@@ -217,14 +239,14 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
             />
 
             {/* Top Control Bar in Fullscreen */}
-            <div className="absolute top-4 left-4 right-4 flex items-center justify-between z-50 pointer-events-auto">
-              <div className="flex items-center gap-2.5 px-4 py-2 rounded-xl bg-black/70 backdrop-blur-md border border-white/10 text-white text-xs font-semibold shadow-2xl">
+            <div className="absolute left-[max(0.75rem,env(safe-area-inset-left))] right-[max(0.75rem,env(safe-area-inset-right))] top-[max(0.75rem,env(safe-area-inset-top))] z-50 flex items-center justify-between gap-2 pointer-events-auto sm:left-4 sm:right-4 sm:top-4">
+              <div className="flex min-w-0 items-center gap-2 rounded-xl border border-white/10 bg-black/70 px-3 py-2 text-xs font-semibold text-white shadow-2xl backdrop-blur-md sm:gap-2.5 sm:px-4">
                 {participant.selfScreen ? (
                   <Monitor className="w-4 h-4 text-gdisc-success" />
                 ) : (
                   <Video className="w-4 h-4 text-gdisc-brand-secondary" />
                 )}
-                <span>
+                <span className="truncate">
                   {participant.user.displayName} — {participant.selfScreen ? 'Compartilhamento de Tela' : 'Câmera'}
                 </span>
               </div>
@@ -234,17 +256,17 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
                   type="button"
                   onClick={() => void toggleFullscreen()}
                   title="Sair da Tela Cheia (Esc)"
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-black/70 backdrop-blur-md border border-white/10 text-white text-xs font-semibold hover:bg-white/20 transition-colors shadow-2xl"
+                  className="flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-black/70 px-3 py-2 text-xs font-semibold text-white shadow-2xl backdrop-blur-md transition-colors hover:bg-white/20"
                 >
                   <Minimize2 className="w-4 h-4" />
-                  <span>Sair da Tela Cheia</span>
+                  <span className="hidden sm:inline">Sair da Tela Cheia</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => void toggleFullscreen()}
                   title="Fechar (Esc)"
-                  className="p-2 rounded-xl bg-black/70 backdrop-blur-md border border-white/10 text-white hover:bg-red-600 transition-colors shadow-2xl"
+                  className="hidden min-h-11 min-w-11 items-center justify-center rounded-xl border border-white/10 bg-black/70 text-white shadow-2xl backdrop-blur-md transition-colors hover:bg-red-600 sm:flex"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -252,7 +274,7 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
             </div>
 
             {/* Bottom floating hint */}
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full bg-black/60 backdrop-blur-md border border-white/10 text-[11px] text-white/70 pointer-events-none">
+            <div className="absolute bottom-4 left-1/2 hidden -translate-x-1/2 rounded-full border border-white/10 bg-black/60 px-4 py-1.5 text-[11px] text-white/70 pointer-events-none backdrop-blur-md sm:block">
               Pressione <kbd className="px-1.5 py-0.5 rounded bg-white/20 text-white font-mono text-[10px]">Esc</kbd> ou dê duplo clique para sair
             </div>
           </div>,

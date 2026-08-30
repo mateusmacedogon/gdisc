@@ -3,21 +3,25 @@ import { Modal } from '../common/Modal.js';
 import { useUIStore } from '../../stores/useUIStore.js';
 import { useVoiceStore } from '../../stores/useVoiceStore.js';
 import { Mic, Video, Volume2 } from 'lucide-react';
+import { platformCapabilities } from '../../utils/platform.js';
 
 export const DeviceSettingsModal: React.FC = () => {
   const { activeModal, closeModal, addToast } = useUIStore();
   const {
     selectedAudioInputId,
+    selectedAudioOutputId,
     selectedVideoInputId,
     setAudioInput,
+    setAudioOutput,
     setVideoInput,
     localStream,
   } = useVoiceStore();
 
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [audioOutputDevices, setAudioOutputDevices] = useState<MediaDeviceInfo[]>([]);
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
   const [micVolume, setMicVolume] = useState(0);
-  const [switchingDevice, setSwitchingDevice] = useState<'audio' | 'video' | null>(null);
+  const [switchingDevice, setSwitchingDevice] = useState<'audio' | 'output' | 'video' | null>(null);
 
   const isOpen = activeModal === 'device_settings';
   const animationFrameRef = useRef<number | null>(null);
@@ -46,21 +50,41 @@ export const DeviceSettingsModal: React.FC = () => {
     }
   };
 
+  const changeAudioOutput = async (deviceId: string) => {
+    setSwitchingDevice('output');
+    try {
+      await setAudioOutput(deviceId);
+      addToast('Saída de áudio atualizada.', 'success');
+    } catch (error) {
+      addToast(error instanceof Error ? error.message : 'Não foi possível trocar a saída de áudio.', 'error');
+    } finally {
+      setSwitchingDevice(null);
+    }
+  };
+
   useEffect(() => {
     if (!isOpen) return;
 
     const loadDevices = async () => {
+      if (!navigator.mediaDevices?.enumerateDevices) {
+        addToast('Este dispositivo não permite listar microfones e câmeras.', 'info');
+        return;
+      }
       try {
         const devices = await navigator.mediaDevices.enumerateDevices();
         setAudioDevices(devices.filter((d) => d.kind === 'audioinput'));
+        setAudioOutputDevices(devices.filter((d) => d.kind === 'audiooutput'));
         setVideoDevices(devices.filter((d) => d.kind === 'videoinput'));
       } catch (err) {
         console.error('Error enumerating media devices:', err);
+        addToast('Não foi possível listar os dispositivos de mídia.', 'error');
       }
     };
 
-    loadDevices();
-  }, [isOpen]);
+    void loadDevices();
+    navigator.mediaDevices?.addEventListener?.('devicechange', loadDevices);
+    return () => navigator.mediaDevices?.removeEventListener?.('devicechange', loadDevices);
+  }, [addToast, isOpen]);
 
   // Audio meter test preview
   useEffect(() => {
@@ -143,6 +167,34 @@ export const DeviceSettingsModal: React.FC = () => {
               />
             </div>
           </div>
+        </div>
+
+        {/* Speaker / headphones selector (Chromium desktop only). */}
+        <div>
+          <label htmlFor="audio-output-device" className="flex items-center gap-2 text-xs font-semibold text-gdisc-text-secondary uppercase tracking-wider mb-2">
+            <Volume2 className="w-4 h-4 text-gdisc-brand-secondary" />
+            Alto-falante / Fone de Ouvido
+          </label>
+          {platformCapabilities.audioOutputSelection ? (
+            <select
+              id="audio-output-device"
+              value={selectedAudioOutputId || ''}
+              onChange={(e) => void changeAudioOutput(e.target.value)}
+              disabled={switchingDevice !== null}
+              className="min-h-11 w-full rounded-xl border border-gdisc-bg-hover bg-gdisc-bg-secondary px-3.5 py-2.5 text-base text-gdisc-text-primary transition-colors focus:border-gdisc-brand-primary focus:outline-none disabled:opacity-50 sm:text-sm"
+            >
+              <option value="">Padrão do Sistema</option>
+              {audioOutputDevices.map((device, index) => (
+                <option key={device.deviceId || index} value={device.deviceId}>
+                  {device.label || `Saída de áudio ${index + 1}`}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <p className="rounded-xl border border-gdisc-bg-hover bg-gdisc-bg-secondary px-3.5 py-3 text-sm leading-relaxed text-gdisc-text-muted">
+              A saída de áudio é controlada pelas configurações do sistema neste dispositivo.
+            </p>
+          )}
         </div>
 
         {/* Camera Selector */}

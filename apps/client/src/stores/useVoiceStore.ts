@@ -4,9 +4,36 @@ import { rtcManager, type ScreenShareOptions } from '../services/rtc.js';
 import { AudioActivityDetector } from '../services/audioMeter.js';
 import { sounds } from '../services/soundEffects.js';
 import { useAuthStore } from './useAuthStore.js';
+import { useUIStore } from './useUIStore.js';
 import { WSEvents, type VoiceState, type UserSummary, type RTCSignalPayload } from '@gdisc/shared';
+import { platformCapabilities } from '../utils/platform.js';
 
 const vad = new AudioActivityDetector();
+const DEVICE_PREFERENCES_KEY = 'gdisc:voice-device-preferences';
+
+interface DevicePreferences {
+  audioInputId?: string;
+  audioOutputId?: string;
+  videoInputId?: string;
+}
+
+const loadDevicePreferences = (): DevicePreferences => {
+  try {
+    return JSON.parse(localStorage.getItem(DEVICE_PREFERENCES_KEY) ?? '{}') as DevicePreferences;
+  } catch {
+    return {};
+  }
+};
+
+const saveDevicePreferences = (preferences: DevicePreferences): void => {
+  try {
+    localStorage.setItem(DEVICE_PREFERENCES_KEY, JSON.stringify(preferences));
+  } catch {
+    // Storage can be disabled in hardened browser profiles.
+  }
+};
+
+const initialDevicePreferences = loadDevicePreferences();
 
 interface VoiceStoreState {
   activeVoiceChannelId: string | null;
@@ -33,6 +60,7 @@ interface VoiceStoreState {
   toggleVideo: () => Promise<void>;
   toggleScreenShare: (options?: ScreenShareOptions) => Promise<void>;
   setAudioInput: (deviceId: string) => Promise<void>;
+  setAudioOutput: (deviceId: string) => Promise<void>;
   setVideoInput: (deviceId: string) => Promise<void>;
 
   // Realtime handlers
@@ -55,6 +83,9 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   localStream: null,
   screenStream: null,
   remoteStreams: new Map(),
+  selectedAudioInputId: initialDevicePreferences.audioInputId,
+  selectedAudioOutputId: initialDevicePreferences.audioOutputId,
+  selectedVideoInputId: initialDevicePreferences.videoInputId,
 
   joinVoice: async (channelId: string, serverId: string) => {
     // If currently in a channel, leave it
@@ -72,16 +103,28 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
     rtcManager.setRemoteStreamCallback((streams) => {
       set({ remoteStreams: new Map(streams) });
     });
+    rtcManager.setScreenShareEndedCallback(() => {
+      const channelId = get().activeVoiceChannelId;
+      set({ isScreenSharing: false, screenStream: null });
+      if (channelId) {
+        wsClient.send(WSEvents.VOICE_STATE_UPDATE, { channelId, selfScreen: false });
+      }
+    });
 
     try {
+      const requestedVideo = get().isVideoOn;
       const stream = await rtcManager.initLocalMedia(
-        !get().isMuted,
-        get().isVideoOn,
+        true,
+        requestedVideo,
         get().selectedAudioInputId,
         get().selectedVideoInputId
       );
+      rtcManager.toggleMute(get().isMuted);
+      const videoEnabled = requestedVideo && stream.getVideoTracks().some(
+        (track) => track.readyState === 'live',
+      );
 
-      set({ localStream: stream });
+      set({ localStream: stream, isVideoOn: videoEnabled });
 
       // Wait for the private Realtime channel and Presence tracking before any
       // WebRTC offer, answer or ICE candidate is sent.
@@ -90,7 +133,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
         serverId,
         selfMute: get().isMuted,
         selfDeaf: get().isDeafened,
-        selfVideo: get().isVideoOn,
+        selfVideo: videoEnabled,
         selfScreen: get().isScreenSharing,
       });
 
@@ -108,6 +151,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
       console.error('Error joining voice:', err);
       vad.stop();
       rtcManager.leaveAll();
+      rtcManager.setScreenShareEndedCallback(null);
       await wsClient.leaveVoice();
       set({
         activeVoiceChannelId: null,
@@ -127,6 +171,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
     sounds.playLeave();
     vad.stop();
     rtcManager.leaveAll();
+    rtcManager.setScreenShareEndedCallback(null);
 
     set({
       activeVoiceChannelId: null,
@@ -207,6 +252,12 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
     } else {
       const stream = await rtcManager.startScreenShare(options);
       if (stream) {
+        if (options?.withAudio && stream.getAudioTracks().length === 0) {
+          useUIStore.getState().addToast(
+            'A tela foi compartilhada sem áudio. Para transmitir som, escolha uma guia ou janela compatível no seletor do sistema.',
+            'info',
+          );
+        }
         set({ isScreenSharing: true, screenStream: stream });
         const channelId = get().activeVoiceChannelId;
         if (channelId) {
@@ -222,24 +273,49 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   },
 
   setAudioInput: async (deviceId: string) => {
-    set({ selectedAudioInputId: deviceId });
     if (get().activeVoiceChannelId) {
-      const stream = await rtcManager.initLocalMedia(
-        !get().isMuted,
-        get().isVideoOn,
-        deviceId,
-        get().selectedVideoInputId
-      );
+      const stream = await rtcManager.switchAudioInput(deviceId || undefined);
+      rtcManager.toggleMute(get().isMuted);
       set({ localStream: stream });
     }
+    const selectedAudioInputId = deviceId || undefined;
+    set({ selectedAudioInputId });
+    saveDevicePreferences({
+      audioInputId: selectedAudioInputId,
+      audioOutputId: get().selectedAudioOutputId,
+      videoInputId: get().selectedVideoInputId,
+    });
+  },
+
+  setAudioOutput: async (deviceId: string) => {
+    if (!platformCapabilities.audioOutputSelection) {
+      throw new Error('A saída de áudio é controlada pelo sistema neste dispositivo.');
+    }
+    const probe = document.createElement('audio') as HTMLAudioElement & {
+      setSinkId: (id: string) => Promise<void>;
+    };
+    await probe.setSinkId(deviceId || 'default');
+    const selectedAudioOutputId = deviceId || undefined;
+    set({ selectedAudioOutputId });
+    saveDevicePreferences({
+      audioInputId: get().selectedAudioInputId,
+      audioOutputId: selectedAudioOutputId,
+      videoInputId: get().selectedVideoInputId,
+    });
   },
 
   setVideoInput: async (deviceId: string) => {
-    set({ selectedVideoInputId: deviceId });
     if (get().activeVoiceChannelId && get().isVideoOn) {
-      const stream = await rtcManager.toggleCamera(true, deviceId);
+      const stream = await rtcManager.toggleCamera(true, deviceId || undefined);
       set({ localStream: stream });
     }
+    const selectedVideoInputId = deviceId || undefined;
+    set({ selectedVideoInputId });
+    saveDevicePreferences({
+      audioInputId: get().selectedAudioInputId,
+      audioOutputId: get().selectedAudioOutputId,
+      videoInputId: selectedVideoInputId,
+    });
   },
 
   setVoiceRoomUsers: (channelId: string, serverId: string, peers: VoiceState[]) => {

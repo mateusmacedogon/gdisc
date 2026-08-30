@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm run build --workspace=@gdisc/shared && tsc && vite build && node scripts/copy-dist.js",
+    "build": "npm --prefix ../.. run build --workspace=@gdisc/shared && tsc && vite build && node scripts/copy-dist.js",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@capacitor/app": "^6.0.2",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/status-bar": "^6.0.2",
     "@gdisc/shared": "*",
     "@supabase/supabase-js": "2.112.4",
     "clsx": "^2.1.1",

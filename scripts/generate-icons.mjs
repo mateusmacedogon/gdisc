@@ -85,9 +85,11 @@ function drawGDisCIcon(size) {
 async function run() {
   const desktopAssets = path.resolve('apps/desktop/assets');
   const clientPublic = path.resolve('apps/client/public');
+  const tauriIcons = path.resolve('apps/client/src-tauri/icons');
 
   if (!fs.existsSync(desktopAssets)) fs.mkdirSync(desktopAssets, { recursive: true });
   if (!fs.existsSync(clientPublic)) fs.mkdirSync(clientPublic, { recursive: true });
+  if (!fs.existsSync(tauriIcons)) fs.mkdirSync(tauriIcons, { recursive: true });
 
   const sizes = [256, 128, 64, 48, 32, 16];
   const pngBuffers = [];
@@ -95,6 +97,12 @@ async function run() {
   for (const s of sizes) {
     const buf = drawGDisCIcon(s);
     fs.writeFileSync(path.join(desktopAssets, `icon_${s}.png`), buf);
+    if ([32, 128, 256].includes(s)) {
+      fs.writeFileSync(
+        path.join(tauriIcons, s === 256 ? '128x128@2x.png' : `${s}x${s}.png`),
+        buf,
+      );
+    }
     pngBuffers.push(path.join(desktopAssets, `icon_${s}.png`));
   }
 
@@ -107,6 +115,7 @@ async function run() {
   const icoBuf = await pngToIco(pngBuffers);
   fs.writeFileSync(path.join(desktopAssets, 'icon.ico'), icoBuf);
   fs.writeFileSync(path.join(clientPublic, 'favicon.ico'), icoBuf);
+  fs.writeFileSync(path.join(tauriIcons, 'icon.ico'), icoBuf);
 
   console.log('✅ Ícones PNG e ICO de alta fidelidade gerados com sucesso!');
 }

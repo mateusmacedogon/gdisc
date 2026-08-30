@@ -17,6 +17,7 @@ export interface ElectronAPI {
   isMaximized: () => Promise<boolean>;
   onMaximizedChange: (callback: (isMax: boolean) => void) => () => void;
   getScreenSources: () => Promise<DesktopCaptureSource[]>;
+  selectScreenSource: (sourceId: string) => Promise<void>;
 }
 
 const electronAPI: ElectronAPI = {
@@ -50,6 +51,10 @@ const electronAPI: ElectronAPI = {
 
   getScreenSources: () => {
     return ipcRenderer.invoke('get-screen-sources');
+  },
+
+  selectScreenSource: (sourceId: string) => {
+    return ipcRenderer.invoke('select-screen-source', sourceId);
   },
 };
 

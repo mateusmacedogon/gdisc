@@ -129,6 +129,17 @@ canvas {
 }
 
 @media (max-width: 767px) {
+  button {
+    min-height: 2.75rem;
+  }
+
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea {
+    min-height: 2.75rem;
+    font-size: 1rem;
+  }
+
   /* Interactive controls used on touch layouts meet the 44px minimum target. */
   .gdisc-mobile-navigation button,
   .gdisc-message-composer button {

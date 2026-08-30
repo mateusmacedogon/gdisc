@@ -30,6 +30,10 @@ class RealtimeClient {
   private connecting: Promise<void> | null = null;
   private databaseSubscribed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private voiceReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private voiceSubscribed = false;
+  private presenceQueues = new WeakMap<RealtimeChannel, Promise<void>>();
+  private lastPresenceTrackAt = new WeakMap<RealtimeChannel, number>();
   private disconnecting = false;
 
   public connect(): Promise<void> {
@@ -141,6 +145,9 @@ class RealtimeClient {
     this.databaseSubscribed = false;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    if (this.voiceReconnectTimer) clearTimeout(this.voiceReconnectTimer);
+    this.voiceReconnectTimer = null;
+    this.voiceSubscribed = false;
     for (const channel of this.serverChannels.values()) void supabase.removeChannel(channel);
     this.serverChannels.clear();
     this.channelToServer.clear();
@@ -415,6 +422,9 @@ class RealtimeClient {
       let settled = false;
       channel.subscribe((status) => {
         if (status === 'SUBSCRIBED' && this.voiceState) {
+          this.voiceSubscribed = true;
+          if (this.voiceReconnectTimer) clearTimeout(this.voiceReconnectTimer);
+          this.voiceReconnectTimer = null;
           void channel.track(this.voiceState as any).then((trackStatus) => {
             if (settled) return;
             settled = true;
@@ -426,9 +436,14 @@ class RealtimeClient {
             reject(error);
           });
         }
-        if (!settled && (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED')) {
-          settled = true;
-          reject(new Error(`Falha ao entrar na call: ${status}`));
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          this.voiceSubscribed = false;
+          if (!settled) {
+            settled = true;
+            reject(new Error(`Falha ao entrar na call: ${status}`));
+          } else {
+            this.scheduleVoiceRecovery(channel);
+          }
         }
       });
     });
@@ -467,6 +482,9 @@ class RealtimeClient {
   }
 
   public async leaveVoice(): Promise<void> {
+    if (this.voiceReconnectTimer) clearTimeout(this.voiceReconnectTimer);
+    this.voiceReconnectTimer = null;
+    this.voiceSubscribed = false;
     const channel = this.voiceChannel;
     const voiceState = this.voiceState;
     if (!channel) {
@@ -526,13 +544,43 @@ class RealtimeClient {
   }
 
   private async trackWhenReady(channel: RealtimeChannel, payload: Record<string, unknown>): Promise<void> {
-    try {
-      await this.channelReady.get(channel);
-      const status = await channel.track(payload);
-      if (status !== 'ok') this.emit('connection:error', { event: 'presence:track', status });
-    } catch (error) {
-      this.emit('connection:error', { event: 'presence:track', error });
-    }
+    const previous = this.presenceQueues.get(channel) ?? Promise.resolve();
+    const queued = previous.catch(() => undefined).then(async () => {
+      try {
+        await this.channelReady.get(channel);
+        const elapsed = Date.now() - (this.lastPresenceTrackAt.get(channel) ?? 0);
+        if (elapsed < 300) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 300 - elapsed));
+        }
+        const status = await channel.track(payload);
+        this.lastPresenceTrackAt.set(channel, Date.now());
+        if (status !== 'ok') this.emit('connection:error', { event: 'presence:track', status });
+      } catch (error) {
+        this.emit('connection:error', { event: 'presence:track', error });
+      }
+    });
+    this.presenceQueues.set(channel, queued);
+    await queued;
+  }
+
+  private scheduleVoiceRecovery(channel: RealtimeChannel): void {
+    if (this.disconnecting || this.voiceReconnectTimer || this.voiceChannel !== channel) return;
+    this.voiceReconnectTimer = setTimeout(() => {
+      this.voiceReconnectTimer = null;
+      if (this.disconnecting || this.voiceSubscribed || this.voiceChannel !== channel || !this.voiceState) return;
+
+      const state = { ...this.voiceState };
+      this.voiceChannel = null;
+      void supabase.removeChannel(channel).finally(() => {
+        void this.joinVoice(state).catch((error) => {
+          this.emit('connection:error', { event: 'voice:reconnect', error });
+          this.voiceState = state;
+          this.voiceChannel = channel;
+          this.voiceSubscribed = false;
+          this.scheduleVoiceRecovery(channel);
+        });
+      });
+    }, 2_000);
   }
 
   private async broadcast(channel: RealtimeChannel, event: string, payload: any): Promise<void> {

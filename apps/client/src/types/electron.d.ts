@@ -15,6 +15,7 @@ export interface ElectronGlobalAPI {
   isMaximized: () => Promise<boolean>;
   onMaximizedChange: (callback: (isMax: boolean) => void) => () => void;
   getScreenSources?: () => Promise<DesktopCaptureSource[]>;
+  selectScreenSource?: (sourceId: string) => Promise<void>;
 }
 
 declare global {

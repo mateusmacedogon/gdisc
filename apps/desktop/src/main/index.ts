@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, session, Tray, Menu, nativeImage, desktopCapturer, type NativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, session, shell, Tray, Menu, nativeImage, desktopCapturer, type NativeImage } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -8,11 +8,11 @@ const __dirname = path.dirname(__filename);
 
 // Enable Hardware Acceleration for WebRTC audio/video and screen capture
 app.commandLine.appendSwitch('enable-features', 'WebRTCPeerConnectionWithContext,HardwareMediaKeyHandling');
-app.commandLine.appendSwitch('ignore-certificate-errors');
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let selectedSourceId: string | null = null;
+let isQuitting = false;
 
 const isDev = process.env.NODE_ENV === 'development' && Boolean(process.env.DEV_SERVER_URL);
 const devServerUrl = process.env.DEV_SERVER_URL || 'http://localhost:5173';
@@ -72,26 +72,43 @@ function tryLoadLocalFiles(win: BrowserWindow) {
 }
 
 function setupMediaHandlers() {
-  // Automatically grant permissions for WebRTC (Mic, Camera, Screen share)
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    const allowed = [
-      'media',
-      'camera',
-      'microphone',
-      'display-capture',
-      'screen',
-      'notifications',
-      'pointerLock',
-    ];
-    if (allowed.includes(permission)) {
-      callback(true);
-    } else {
-      callback(false);
+  const isTrustedRenderer = (url: string): boolean => {
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === 'file:' ||
+        (isDev && ['localhost', '127.0.0.1'].includes(parsed.hostname));
+    } catch {
+      return false;
     }
+  };
+
+  const isAllowedPermission = (permission: string): boolean => [
+    'media',
+    'camera',
+    'microphone',
+    'display-capture',
+    'screen',
+  ].includes(permission);
+
+  // Grant media only to the bundled UI (or the local Vite server in dev).
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    const allowed = [
+      isTrustedRenderer(webContents.getURL()),
+      isAllowedPermission(permission),
+    ];
+    callback(allowed.every(Boolean));
   });
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) =>
+    isAllowedPermission(permission) &&
+    isTrustedRenderer(webContents?.getURL() || requestingOrigin),
+  );
 
   // Enable native screen sharing / display media requests via desktopCapturer
-  session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+  session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+    if (!isTrustedRenderer(request.frame?.url ?? '')) {
+      callback({});
+      return;
+    }
     desktopCapturer
       .getSources({ types: ['screen', 'window'] })
       .then((sources) => {
@@ -121,8 +138,8 @@ function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
-    minWidth: 900,
-    minHeight: 600,
+    minWidth: 360,
+    minHeight: 520,
     frame: false, // Frameless modern titlebar
     backgroundColor: '#0B0D12',
     show: false,
@@ -132,8 +149,8 @@ function createMainWindow(): BrowserWindow {
       preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
-      webSecurity: false,
+      sandbox: true,
+      webSecurity: true,
     },
   });
 
@@ -151,6 +168,23 @@ function createMainWindow(): BrowserWindow {
 
   win.once('ready-to-show', () => {
     win.show();
+  });
+  win.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      win.hide();
+    }
+  });
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (event, url) => {
+    const currentUrl = win.webContents.getURL();
+    if (url === currentUrl || url.startsWith(`${currentUrl}#`)) return;
+    event.preventDefault();
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
   });
 
   // Load URL in dev mode or local production files with auto-fallback
@@ -204,12 +238,19 @@ function createTray() {
     {
       label: 'Sair do GDisC',
       click: () => {
+        isQuitting = true;
         app.quit();
       },
     },
   ]);
 
   tray.setContextMenu(contextMenu);
+
+  tray.on('click', () => {
+    if (!mainWindow) return;
+    mainWindow.show();
+    mainWindow.focus();
+  });
 
   tray.on('double-click', () => {
     if (mainWindow) {
@@ -258,7 +299,7 @@ function setupIpcHandlers() {
     }));
   });
 
-  ipcMain.on('select-screen-source', (_event, sourceId: string) => {
+  ipcMain.handle('select-screen-source', (_event, sourceId: string) => {
     selectedSourceId = sourceId;
   });
 }
@@ -273,12 +314,13 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       mainWindow = createMainWindow();
+    } else if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
     }
   });
 });
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+app.on('before-quit', () => {
+  isQuitting = true;
 });

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Check, Copy } from 'lucide-react';
+import { copyToClipboard } from '../../utils/clipboard.js';
 
 interface MarkdownContentProps {
   content: string;
@@ -40,10 +41,14 @@ export const MarkdownContent: React.FC<MarkdownContentProps> = ({ content }) => 
 const CodeBlock: React.FC<{ language: string; code: string }> = ({ language, code }) => {
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = () => {
-    void navigator.clipboard.writeText(code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    try {
+      await copyToClipboard(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
   };
 
   return (
@@ -52,8 +57,9 @@ const CodeBlock: React.FC<{ language: string; code: string }> = ({ language, cod
         <span className="uppercase font-semibold tracking-wider">{language}</span>
         <button
           type="button"
-          onClick={handleCopy}
-          className="flex items-center gap-1 hover:text-gdisc-text-primary transition-colors p-1 rounded"
+          onClick={() => void handleCopy()}
+          aria-label={copied ? 'Código copiado' : 'Copiar código'}
+          className="flex min-h-11 items-center gap-1 rounded px-2 transition-colors hover:text-gdisc-text-primary sm:min-h-8"
         >
           {copied ? (
             <>
