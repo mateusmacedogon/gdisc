@@ -18,6 +18,7 @@ export const CallControls: React.FC = () => {
     isMuted,
     isVideoOn,
     isScreenSharing,
+    isSpeaking,
     toggleMute,
     toggleVideo,
     toggleScreenShare,
@@ -56,6 +57,8 @@ export const CallControls: React.FC = () => {
           className={`flex min-h-11 min-w-11 items-center justify-center rounded-xl transition-all shadow-md ${
             isMuted
               ? 'bg-gdisc-danger text-white hover:opacity-90'
+              : isSpeaking
+              ? 'bg-gdisc-bg-secondary text-gdisc-status-online ring-2 ring-gdisc-status-online shadow-gdisc-speaking'
               : 'bg-gdisc-bg-secondary text-gdisc-text-primary hover:bg-gdisc-bg-hover hover:text-white'
           }`}
         >

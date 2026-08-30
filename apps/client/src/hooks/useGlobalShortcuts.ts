@@ -27,9 +27,16 @@ export const useGlobalShortcuts = () => {
         }
       }
 
-      if (isInput) return;
-
       const isModifier = e.ctrlKey || e.metaKey;
+
+      // Ctrl + K: Quick Switcher (works even inside inputs)
+      if (isModifier && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        useUIStore.getState().openModal('quick_switcher');
+        return;
+      }
+
+      if (isInput) return;
 
       // Ctrl + M: Toggle Mute
       if (isModifier && !e.shiftKey && (e.key === 'm' || e.key === 'M')) {

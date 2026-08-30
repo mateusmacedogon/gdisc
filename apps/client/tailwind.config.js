@@ -17,9 +17,9 @@ export default {
             active: '#282E3E',
           },
           brand: {
-            primary: '#6C63FF',
-            secondary: '#8B85FF',
-            glow: 'rgba(108, 99, 255, 0.25)',
+            primary: 'var(--color-brand-primary, #6C63FF)',
+            secondary: 'var(--color-brand-secondary, #8B85FF)',
+            glow: 'var(--color-brand-glow, rgba(108, 99, 255, 0.25))',
           },
           text: {
             primary: '#F5F7FA',

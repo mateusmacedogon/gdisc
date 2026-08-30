@@ -8,6 +8,7 @@ export type ModalType =
   | 'channel_settings'
   | 'device_settings'
   | 'screen_share'
+  | 'quick_switcher'
   | 'join_invite'
   | null;
 

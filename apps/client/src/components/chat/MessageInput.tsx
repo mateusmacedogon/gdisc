@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useChatStore } from '../../stores/useChatStore.js';
 import { useUIStore } from '../../stores/useUIStore.js';
-import { Loader2, Send, X, CornerDownRight } from 'lucide-react';
+import { Loader2, Send, X, CornerDownRight, Smile } from 'lucide-react';
+import { EmojiPicker } from './EmojiPicker.js';
 
 interface MessageInputProps {
   channelId: string;
@@ -16,6 +17,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 }) => {
   const [content, setContent] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [isEmojiOpen, setIsEmojiOpen] = useState(false);
   const { sendMessage, replyingTo, setReplyingTo, sendTyping } = useChatStore();
   const { addToast } = useUIStore();
   const lastTypingSent = useRef<number>(0);
@@ -110,6 +112,32 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             rows={1}
             className="flex-1 overflow-y-auto bg-transparent border-0 text-base text-gdisc-text-primary placeholder:text-gdisc-text-muted focus:outline-none resize-none max-h-32 min-h-7 py-1 select-text sm:text-sm"
           />
+
+          {/* Emoji Picker Button & Popover */}
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsEmojiOpen((prev) => !prev)}
+              aria-label="Inserir emoji"
+              title="Inserir Emoji"
+              className="flex min-h-11 min-w-11 items-center justify-center text-gdisc-text-muted hover:text-gdisc-brand-secondary hover:bg-gdisc-bg-hover rounded-xl transition-colors"
+            >
+              <Smile className="w-5 h-5" />
+            </button>
+
+            {isEmojiOpen && (
+              <div className="absolute bottom-14 right-0 z-50">
+                <EmojiPicker
+                  onSelect={(emoji) => {
+                    setContent((prev) => prev + emoji);
+                    setIsEmojiOpen(false);
+                    textareaRef.current?.focus();
+                  }}
+                  onClose={() => setIsEmojiOpen(false)}
+                />
+              </div>
+            )}
+          </div>
 
           <button
             type="button"
