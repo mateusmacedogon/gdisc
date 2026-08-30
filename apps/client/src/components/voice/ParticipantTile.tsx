@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Avatar } from '../common/Avatar.js';
-import { Maximize2, MicOff, Minimize2, Video, Monitor, Volume2, X } from 'lucide-react';
+import { Maximize2, MicOff, Minimize2, Video, Monitor, Volume2, X, Loader2 } from 'lucide-react';
 import type { VoiceState } from '@gdisc/shared';
 
 interface ParticipantTileProps {
@@ -28,6 +28,7 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
   const usesNativeFullscreenRef = useRef(false);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const [, setTrackVersion] = useState(0);
 
   // Active listener on MediaStream tracks to dynamically catch newly unmuted or added video/audio tracks
@@ -66,6 +67,8 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
     )
   );
 
+  const shouldRenderVideo = hasVideoTrack || participant.selfScreen || participant.selfVideo;
+
   const hasAudioTrack = Boolean(
     mediaStream &&
     mediaStream.getAudioTracks().some(
@@ -79,22 +82,25 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
       if (videoEl.srcObject !== mediaStream) {
         videoEl.srcObject = mediaStream;
       }
-      videoEl.play().catch(() => undefined);
+      videoEl.play()
+        .then(() => setIsVideoPlaying(true))
+        .catch(() => undefined);
     } else {
       videoEl.srcObject = null;
+      setIsVideoPlaying(false);
     }
   }, [mediaStream]);
 
   // Sync video stream to regular tile
   useEffect(() => {
     attachAndPlayVideo(videoRef.current);
-  }, [attachAndPlayVideo, hasVideoTrack]);
+  }, [attachAndPlayVideo, hasVideoTrack, shouldRenderVideo]);
 
   // Sync video stream to fullscreen portal
   useEffect(() => {
     if (!isFullscreen) return;
     attachAndPlayVideo(fullscreenVideoRef.current);
-  }, [isFullscreen, attachAndPlayVideo, hasVideoTrack]);
+  }, [isFullscreen, attachAndPlayVideo, hasVideoTrack, shouldRenderVideo]);
 
   // Audio output handler
   useEffect(() => {
@@ -189,20 +195,40 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
           />
         )}
 
-        {/* Video Element */}
-        {hasVideoTrack ? (
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            onLoadedMetadata={(e) => {
-              void e.currentTarget.play().catch(() => undefined);
-            }}
-            className={`w-full h-full ${
-              participant.selfScreen ? 'object-contain bg-black' : 'object-cover'
-            } rounded-2xl`}
-          />
+        {/* Video Element (Pre-mounted for zero latency frame decoding) */}
+        {shouldRenderVideo ? (
+          <div className="relative w-full h-full flex items-center justify-center bg-black">
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              onPlaying={() => setIsVideoPlaying(true)}
+              onLoadedMetadata={(e) => {
+                void e.currentTarget.play().then(() => setIsVideoPlaying(true)).catch(() => undefined);
+              }}
+              className={`w-full h-full ${
+                participant.selfScreen ? 'object-contain' : 'object-cover'
+              } rounded-2xl transition-opacity duration-300 ${isVideoPlaying ? 'opacity-100' : 'opacity-0'}`}
+            />
+
+            {/* Connecting placeholder overlay while initial keyframe is arriving */}
+            {!isVideoPlaying && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-gdisc-bg-card/90 backdrop-blur-sm z-10 p-6">
+                <Avatar
+                  src={participant.user.avatarUrl}
+                  name={participant.user.displayName}
+                  size={isScreenShareSpotlight ? 'xl' : 'lg'}
+                  isSpeaking={participant.isSpeaking}
+                  className="mb-3 animate-pulse"
+                />
+                <div className="flex items-center gap-2 text-xs font-semibold text-gdisc-text-secondary">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-gdisc-brand-secondary" />
+                  <span>Sincronizando transmissão...</span>
+                </div>
+              </div>
+            )}
+          </div>
         ) : (
           /* Avatar Display when camera/screen is off */
           <div className="flex flex-col items-center justify-center p-6 text-center">
