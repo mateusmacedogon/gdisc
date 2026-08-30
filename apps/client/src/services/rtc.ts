@@ -1,8 +1,7 @@
 /**
  * GDisC WebRTC Realtime Mesh Engine
  * Production-ready P2P WebRTC engine with Immutable MediaStream Architecture,
- * Perfect Negotiation, active Transceiver direction synchronization,
- * and reliable video streaming.
+ * Perfect Negotiation, resilient browser display capture, and dynamic transceiver direction.
  */
 
 import { wsClient } from './ws.js';
@@ -161,7 +160,7 @@ class WebRTCManager {
   }
 
   /**
-   * Starts screen capture
+   * Starts screen capture on Desktop or Web browser
    */
   public async startScreenShare(options?: ScreenShareOptions): Promise<MediaStream | null> {
     if (!platformCapabilities.screenShare) {
@@ -205,20 +204,42 @@ class WebRTCManager {
           });
           this.screenStream = stream;
         } catch (desktopErr) {
-          console.warn('[WebRTC] getUserMedia desktop source failed, falling back:', desktopErr);
+          console.warn('[WebRTC] getUserMedia desktop source failed, falling back to getDisplayMedia:', desktopErr);
         }
       }
 
+      // Web Browser standard getDisplayMedia capture with resilient fallback
       if (!this.screenStream) {
-        this.screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: {
-            cursor: 'always',
-            width: { ideal: width, max: width },
-            height: { ideal: height, max: height },
-            frameRate: { ideal: fps, max: fps },
-          } as any,
-          audio: Boolean(options?.withAudio),
-        });
+        const videoConstraints: MediaTrackConstraints = {
+          width: { ideal: width },
+          height: { ideal: height },
+          frameRate: { ideal: fps },
+        };
+
+        const tryGetDisplayMedia = async (withSysAudio: boolean): Promise<MediaStream> => {
+          return await navigator.mediaDevices.getDisplayMedia({
+            video: videoConstraints,
+            audio: withSysAudio
+              ? {
+                  echoCancellation: false,
+                  noiseSuppression: false,
+                  autoGainControl: false,
+                }
+              : false,
+          } as DisplayMediaStreamOptions);
+        };
+
+        try {
+          this.screenStream = await tryGetDisplayMedia(Boolean(options?.withAudio));
+        } catch (displayErr: any) {
+          // If browser rejects because system audio is unsupported on chosen display/window, retry with video only
+          if (options?.withAudio && displayErr?.name !== 'NotAllowedError') {
+            console.warn('[WebRTC] getDisplayMedia with audio failed, retrying with video only:', displayErr);
+            this.screenStream = await tryGetDisplayMedia(false);
+          } else {
+            throw displayErr;
+          }
+        }
       }
 
       const videoTrack = this.screenStream.getVideoTracks()[0];
@@ -682,6 +703,9 @@ class WebRTCManager {
       }
       if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
         return new Error(`${fallback} O dispositivo pode estar sendo usado por outro aplicativo.`);
+      }
+      if (error.name === 'OverconstrainedError') {
+        return new Error(`${fallback} A resolução ou taxa de quadros solicitada não é suportada.`);
       }
     }
     return new Error(fallback);
