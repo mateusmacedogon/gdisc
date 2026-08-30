@@ -1,7 +1,8 @@
 /**
  * GDisC WebRTC Realtime Mesh Engine
- * Production-ready P2P WebRTC engine with Perfect Negotiation,
- * active transceiver direction sync, and rock-solid media streaming.
+ * Production-ready P2P WebRTC engine with Immutable MediaStream Architecture,
+ * Perfect Negotiation, active Transceiver direction synchronization,
+ * and reliable video streaming.
  */
 
 import { wsClient } from './ws.js';
@@ -53,6 +54,7 @@ class WebRTCManager {
   private localStream: MediaStream | null = null;
   private screenStream: MediaStream | null = null;
   private peerConnections: Map<string, RTCPeerConnection> = new Map();
+  private remotePeerTracks: Map<string, Map<string, MediaStreamTrack>> = new Map();
   private remoteStreams: Map<string, MediaStream> = new Map();
   private pendingIceCandidates: Map<string, RTCIceCandidateInit[]> = new Map();
   private disconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
@@ -402,6 +404,7 @@ class WebRTCManager {
     this.disconnectTimers.delete(userId);
     this.pendingIceCandidates.delete(userId);
     this.isMakingOffer.delete(userId);
+    this.remotePeerTracks.delete(userId);
     this.remoteStreams.delete(userId);
     this.notifyRemoteStreamsChanged();
   }
@@ -424,6 +427,7 @@ class WebRTCManager {
     for (const timer of this.disconnectTimers.values()) clearTimeout(timer);
     this.disconnectTimers.clear();
 
+    this.remotePeerTracks.clear();
     this.remoteStreams.clear();
     this.pendingIceCandidates.clear();
     this.isMakingOffer.clear();
@@ -466,38 +470,46 @@ class WebRTCManager {
       }
     };
 
-    // Remote Track event with stable user stream
+    // Remote Track event with Immutable MediaStream generation
     pc.ontrack = (event) => {
-      let userStream = this.remoteStreams.get(targetUserId);
-      if (!userStream) {
-        userStream = new MediaStream();
-        this.remoteStreams.set(targetUserId, userStream);
+      let peerTracks = this.remotePeerTracks.get(targetUserId);
+      if (!peerTracks) {
+        peerTracks = new Map<string, MediaStreamTrack>();
+        this.remotePeerTracks.set(targetUserId, peerTracks);
       }
 
-      // If a track of same kind already exists, replace it with the new live track
-      const existingSameKind = userStream.getTracks().find((t) => t.kind === event.track.kind);
-      if (existingSameKind && existingSameKind.id !== event.track.id) {
-        userStream.removeTrack(existingSameKind);
+      // If an existing track of the same kind is present, remove it in favor of the new track
+      for (const [id, t] of peerTracks.entries()) {
+        if (t.kind === event.track.kind && id !== event.track.id) {
+          peerTracks.delete(id);
+        }
       }
 
-      if (!userStream.getTracks().some((t) => t.id === event.track.id)) {
-        userStream.addTrack(event.track);
-      }
+      peerTracks.set(event.track.id, event.track);
 
-      const updateUI = () => {
+      const rebuildFreshStream = () => {
+        const currentTracks = this.remotePeerTracks.get(targetUserId);
+        if (!currentTracks) return;
+
+        const liveTracks = [...currentTracks.values()].filter((t) => t.readyState === 'live');
+        // Generate a new immutable MediaStream object so React catches the reference change instantly
+        const freshStream = new MediaStream(liveTracks);
+        this.remoteStreams.set(targetUserId, freshStream);
         this.notifyRemoteStreamsChanged();
       };
 
       event.track.onended = () => {
-        if (userStream) {
-          userStream.removeTrack(event.track);
-          updateUI();
+        const tracks = this.remotePeerTracks.get(targetUserId);
+        if (tracks) {
+          tracks.delete(event.track.id);
+          rebuildFreshStream();
         }
       };
-      event.track.onmute = () => updateUI();
-      event.track.onunmute = () => updateUI();
 
-      updateUI();
+      event.track.onmute = () => rebuildFreshStream();
+      event.track.onunmute = () => rebuildFreshStream();
+
+      rebuildFreshStream();
     };
 
     // Connection state handler
@@ -513,7 +525,7 @@ class WebRTCManager {
           if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
             this.removePeer(targetUserId);
           }
-        }, 10_000));
+        }, 12_000));
       }
     };
 
@@ -569,7 +581,7 @@ class WebRTCManager {
       if (audioTransceivers[1].sender.track !== screenAudioTrack) {
         await audioTransceivers[1].sender.replaceTrack(screenAudioTrack);
       }
-      audioTransceivers[1].direction = screenAudioTrack ? 'sendrecv' : 'sendrecv';
+      audioTransceivers[1].direction = 'sendrecv';
     }
 
     if (videoTransceiver) {

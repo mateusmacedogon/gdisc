@@ -30,7 +30,7 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [, setTrackVersion] = useState(0);
 
-  // Active listener on MediaStream tracks to dynamically catch newly unmuted or added video/audio tracks
+  // Active listener on MediaStream tracks to dynamically trigger updates on track state changes
   useEffect(() => {
     if (!mediaStream) return;
 
@@ -73,14 +73,18 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
     )
   );
 
-  // Sync video stream to regular tile without ever resetting srcObject to null prematurely
+  // Sync video stream to regular tile
   useEffect(() => {
     const video = videoRef.current;
-    if (video && mediaStream) {
-      if (video.srcObject !== mediaStream) {
-        video.srcObject = mediaStream;
+    if (video) {
+      if (mediaStream) {
+        if (video.srcObject !== mediaStream) {
+          video.srcObject = mediaStream;
+        }
+        void video.play().catch(() => undefined);
+      } else {
+        video.srcObject = null;
       }
-      void video.play().catch(() => undefined);
     }
   }, [mediaStream, hasVideoTrack]);
 
@@ -88,11 +92,15 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
   useEffect(() => {
     if (!isFullscreen) return;
     const fsVideo = fullscreenVideoRef.current;
-    if (fsVideo && mediaStream) {
-      if (fsVideo.srcObject !== mediaStream) {
-        fsVideo.srcObject = mediaStream;
+    if (fsVideo) {
+      if (mediaStream) {
+        if (fsVideo.srcObject !== mediaStream) {
+          fsVideo.srcObject = mediaStream;
+        }
+        void fsVideo.play().catch(() => undefined);
+      } else {
+        fsVideo.srcObject = null;
       }
-      void fsVideo.play().catch(() => undefined);
     }
   }, [isFullscreen, mediaStream, hasVideoTrack]);
 
