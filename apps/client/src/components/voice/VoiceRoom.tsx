@@ -4,7 +4,7 @@ import { useVoiceStore } from '../../stores/useVoiceStore.js';
 import { useAuthStore } from '../../stores/useAuthStore.js';
 import { ParticipantTile } from './ParticipantTile.js';
 import { CallControls } from './CallControls.js';
-import { Volume2, Users } from 'lucide-react';
+import { Loader2, RefreshCw, ShieldCheck, Signal, SignalLow, Volume2, Users, WifiOff } from 'lucide-react';
 import type { VoiceState } from '@gdisc/shared';
 
 export const VoiceRoom: React.FC = () => {
@@ -22,7 +22,25 @@ export const VoiceRoom: React.FC = () => {
     isScreenSharing,
     isSpeaking,
     selectedAudioOutputId,
+    connectionSnapshot,
+    retryConnections,
   } = useVoiceStore();
+
+  const connectionLabel = connectionSnapshot.status === 'connected'
+    ? connectionSnapshot.quality === 'excellent' ? 'Conexão excelente' : 'Conectado'
+    : connectionSnapshot.status === 'poor'
+      ? 'Conexão instável'
+      : connectionSnapshot.status === 'failed'
+        ? 'Falha na mídia'
+        : connectionSnapshot.status === 'reconnecting'
+          ? 'Reconectando mídia…'
+          : 'Conectando mídia…';
+  const ConnectionIcon = connectionSnapshot.status === 'failed'
+    ? WifiOff
+    : connectionSnapshot.status === 'reconnecting' || connectionSnapshot.status === 'connecting'
+      ? Loader2
+      : connectionSnapshot.status === 'poor' ? SignalLow : Signal;
+  const needsRetry = ['poor', 'failed', 'reconnecting'].includes(connectionSnapshot.status);
 
   const channelParticipants: VoiceState[] = activeChannel
     ? voiceStates[activeChannel.id] || []
@@ -87,9 +105,36 @@ export const VoiceRoom: React.FC = () => {
           </span>
         </div>
 
-        <div className="flex items-center gap-1.5 text-xs text-gdisc-text-muted bg-gdisc-bg-card px-2.5 py-1 rounded-lg border border-gdisc-bg-hover">
-          <Users className="w-3.5 h-3.5 text-gdisc-brand-secondary" />
-          <span>WebRTC P2P</span>
+        <div className="flex items-center gap-1.5">
+          <div
+            className={`hidden items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs sm:flex ${
+              connectionSnapshot.status === 'failed' || connectionSnapshot.status === 'poor'
+                ? 'border-gdisc-danger/40 bg-gdisc-danger/10 text-gdisc-danger'
+                : 'border-gdisc-bg-hover bg-gdisc-bg-card text-gdisc-text-muted'
+            }`}
+            title={`${connectionSnapshot.connectedPeers}/${connectionSnapshot.peerCount} pares conectados${connectionSnapshot.roundTripTimeMs ? ` • ${connectionSnapshot.roundTripTimeMs} ms` : ''}${connectionSnapshot.packetLossPercent !== undefined ? ` • ${connectionSnapshot.packetLossPercent}% de perda` : ''}`}
+            role="status"
+            aria-live="polite"
+          >
+            <ConnectionIcon className={`h-3.5 w-3.5 ${connectionSnapshot.status === 'connecting' || connectionSnapshot.status === 'reconnecting' ? 'animate-spin' : ''}`} />
+            <span>{connectionLabel}</span>
+            {connectionSnapshot.usingTurn && <ShieldCheck className="h-3.5 w-3.5 text-gdisc-success" aria-label="Conexão protegida por relay TURN" />}
+          </div>
+          {needsRetry && (
+            <button
+              type="button"
+              onClick={() => void retryConnections()}
+              className="flex min-h-9 min-w-9 items-center justify-center rounded-lg border border-gdisc-bg-hover bg-gdisc-bg-card text-gdisc-text-muted transition-colors hover:text-white"
+              aria-label="Tentar reconectar a mídia"
+              title="Tentar reconectar áudio e vídeo"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+          )}
+          <div className="hidden items-center gap-1.5 rounded-lg border border-gdisc-bg-hover bg-gdisc-bg-card px-2.5 py-1 text-xs text-gdisc-text-muted md:flex">
+            <Users className="w-3.5 h-3.5 text-gdisc-brand-secondary" />
+            <span>WebRTC P2P</span>
+          </div>
         </div>
       </div>
 

@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Avatar } from '../common/Avatar.js';
-import { Maximize2, MicOff, Minimize2, Video, Monitor, Volume2, X } from 'lucide-react';
+import { Loader2, Maximize2, MicOff, Minimize2, Video, Monitor, Volume2, X } from 'lucide-react';
 import type { VoiceState } from '@gdisc/shared';
 
 interface ParticipantTileProps {
@@ -63,7 +63,7 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
   const hasVideoTrack = Boolean(
     mediaStream &&
     mediaStream.getVideoTracks().some(
-      (track) => track.readyState === 'live' && track.enabled
+      (track) => track.readyState === 'live' && track.enabled && !track.muted
     )
   );
 
@@ -300,6 +300,13 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
             <span className="text-xs text-gdisc-text-muted mt-0.5">
               {isLocal ? '(Você)' : `@${participant.user.username}`}
             </span>
+          </div>
+        )}
+
+        {!isLocal && (participant.selfVideo || participant.selfScreen) && !hasVideoTrack && (
+          <div className="absolute inset-x-3 bottom-14 z-20 flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-black/65 px-3 py-2 text-xs font-semibold text-white/85 backdrop-blur-md">
+            <Loader2 className="h-4 w-4 animate-spin text-gdisc-brand-secondary" />
+            Reconectando {participant.selfScreen ? 'compartilhamento' : 'câmera'}…
           </div>
         )}
 

@@ -103,7 +103,9 @@ O frontend não depende de URLs relativas a um backend local; ele conversa diret
 
 O WebRTC atual é mesh P2P. Para chamadas confiáveis fora de redes domésticas, configure servidores TURN; para salas grandes, migre a mídia para uma SFU.
 
-O cliente aceita TURN pelas variáveis `VITE_TURN_URLS`, `VITE_TURN_USERNAME` e `VITE_TURN_CREDENTIAL`. Como variáveis `VITE_*` ficam públicas no bundle, use credenciais temporárias emitidas pelo seu provedor TURN sempre que possível.
+O cliente aceita TURN estático pelas variáveis `VITE_TURN_URLS`, `VITE_TURN_USERNAME` e `VITE_TURN_CREDENTIAL`. Em produção, prefira `VITE_TURN_CREDENTIALS_URL`: o cliente consulta esse endpoint com o JWT do usuário, valida a resposta e mantém credenciais temporárias em cache por cinco minutos. O endpoint pode retornar um array de `RTCIceServer` ou `{ "iceServers": [...] }`.
+
+A chamada monitora RTT, perda de pacotes e fluxo de bytes com `getStats()`. Quando detecta mídia travada, tenta reiniciar o ICE e, se necessário, recria o par automaticamente. Vídeo e tela reduzem bitrate, resolução e FPS durante perda alta, recuperando a qualidade quando a rede estabiliza.
 
 ## Segurança do banco
 

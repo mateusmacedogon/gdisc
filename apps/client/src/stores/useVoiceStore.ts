@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 import { wsClient } from '../services/ws.js';
-import { rtcManager, type ScreenShareOptions } from '../services/rtc.js';
+import {
+  rtcManager,
+  type CallConnectionSnapshot,
+  type ScreenShareOptions,
+} from '../services/rtc.js';
 import { AudioActivityDetector } from '../services/audioMeter.js';
 import { sounds } from '../services/soundEffects.js';
 import { useAuthStore } from './useAuthStore.js';
@@ -47,6 +51,7 @@ interface VoiceStoreState {
   localStream: MediaStream | null;
   screenStream: MediaStream | null;
   remoteStreams: Map<string, MediaStream>;
+  connectionSnapshot: CallConnectionSnapshot;
 
   // Device selectors
   selectedAudioInputId?: string;
@@ -62,6 +67,7 @@ interface VoiceStoreState {
   setAudioInput: (deviceId: string) => Promise<void>;
   setAudioOutput: (deviceId: string) => Promise<void>;
   setVideoInput: (deviceId: string) => Promise<void>;
+  retryConnections: () => Promise<void>;
 
   // Realtime handlers
   setVoiceRoomUsers: (channelId: string, serverId: string, peers: VoiceState[]) => void;
@@ -83,6 +89,13 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   localStream: null,
   screenStream: null,
   remoteStreams: new Map(),
+  connectionSnapshot: {
+    status: 'connecting',
+    quality: 'unknown',
+    peerCount: 0,
+    connectedPeers: 0,
+    usingTurn: false,
+  },
   selectedAudioInputId: initialDevicePreferences.audioInputId,
   selectedAudioOutputId: initialDevicePreferences.audioOutputId,
   selectedVideoInputId: initialDevicePreferences.videoInputId,
@@ -102,6 +115,18 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
     // Setup listener for remote stream updates
     rtcManager.setRemoteStreamCallback((streams) => {
       set({ remoteStreams: new Map(streams) });
+    });
+    rtcManager.setConnectionSnapshotCallback((connectionSnapshot) => {
+      const previousStatus = get().connectionSnapshot.status;
+      set({ connectionSnapshot });
+      if (connectionSnapshot.status === 'failed' && previousStatus !== 'failed') {
+        useUIStore.getState().addToast(
+          connectionSnapshot.usingTurn
+            ? 'A conexão de mídia falhou e será tentada novamente automaticamente.'
+            : 'A rede bloqueou a conexão direta. Tentando novamente; para redes restritas, configure um servidor TURN.',
+          'error',
+        );
+      }
     });
     rtcManager.setScreenShareEndedCallback(() => {
       const channelId = get().activeVoiceChannelId;
@@ -152,6 +177,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
       vad.stop();
       rtcManager.leaveAll();
       rtcManager.setScreenShareEndedCallback(null);
+      rtcManager.setConnectionSnapshotCallback(null);
       await wsClient.leaveVoice();
       set({
         activeVoiceChannelId: null,
@@ -162,6 +188,13 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
         isSpeaking: false,
         isVideoOn: false,
         isScreenSharing: false,
+        connectionSnapshot: {
+          status: 'connecting',
+          quality: 'unknown',
+          peerCount: 0,
+          connectedPeers: 0,
+          usingTurn: false,
+        },
       });
       throw err;
     }
@@ -172,6 +205,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
     vad.stop();
     rtcManager.leaveAll();
     rtcManager.setScreenShareEndedCallback(null);
+    rtcManager.setConnectionSnapshotCallback(null);
 
     set({
       activeVoiceChannelId: null,
@@ -182,6 +216,13 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
       isSpeaking: false,
       isVideoOn: false,
       isScreenSharing: false,
+      connectionSnapshot: {
+        status: 'connecting',
+        quality: 'unknown',
+        peerCount: 0,
+        connectedPeers: 0,
+        usingTurn: false,
+      },
     });
     await wsClient.leaveVoice();
   },
@@ -318,6 +359,10 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
     });
   },
 
+  retryConnections: async () => {
+    await rtcManager.retryAllConnections();
+  },
+
   setVoiceRoomUsers: (channelId: string, serverId: string, peers: VoiceState[]) => {
     set((state) => ({
       voiceStates: {
@@ -334,6 +379,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
       .map((p) => p.userId);
 
     if (channelId === get().activeVoiceChannelId) {
+      rtcManager.syncPeerMediaStates(peers);
       void rtcManager.syncPeers(otherPeerIds);
     }
   },
@@ -351,6 +397,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
     });
 
     if (voiceState.channelId === get().activeVoiceChannelId) {
+      rtcManager.updatePeerMediaState(voiceState);
       void rtcManager.connectToPeers([voiceState.userId]);
     }
   },
@@ -369,6 +416,9 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   },
 
   handleVoiceStateUpdate: (voiceState: VoiceState) => {
+    if (voiceState.channelId === get().activeVoiceChannelId) {
+      rtcManager.updatePeerMediaState(voiceState);
+    }
     set((state) => {
       const channelUsers = state.voiceStates[voiceState.channelId] || [];
       const exists = channelUsers.some((user) => user.userId === voiceState.userId);

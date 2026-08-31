@@ -5,7 +5,9 @@
  */
 
 import { wsClient } from './ws.js';
-import { WSEvents, type RTCSignalPayload } from '@gdisc/shared';
+import { supabase } from './supabase.js';
+import { type RTCSignalPayload } from '@gdisc/shared';
+import type { VoiceState } from '@gdisc/shared';
 import { platformCapabilities } from '../utils/platform.js';
 
 type ViteRuntimeEnv = Record<string, string | boolean | undefined>;
@@ -21,23 +23,23 @@ const turnUrls = optionalStringEnv('VITE_TURN_URLS')
   .filter(Boolean) ?? [];
 const turnUsername = optionalStringEnv('VITE_TURN_USERNAME');
 const turnCredential = optionalStringEnv('VITE_TURN_CREDENTIAL');
+const turnCredentialsUrl = optionalStringEnv('VITE_TURN_CREDENTIALS_URL');
 
 const configuredTurnServer: RTCIceServer[] = turnUrls.length > 0 && turnUsername && turnCredential
   ? [{ urls: turnUrls, username: turnUsername, credential: turnCredential }]
   : [];
 
+const BASE_ICE_SERVERS: RTCIceServer[] = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  ...configuredTurnServer,
+];
+
 const RTC_CONFIG: RTCConfiguration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' },
-    { urls: 'stun:stun.services.mozilla.com' },
-    ...configuredTurnServer,
-  ],
-  iceCandidatePoolSize: 10,
+  iceServers: BASE_ICE_SERVERS,
+  iceCandidatePoolSize: 4,
+  bundlePolicy: 'max-bundle',
+  rtcpMuxPolicy: 'require',
 };
 
 export interface ScreenShareOptions {
@@ -49,6 +51,115 @@ export interface ScreenShareOptions {
 
 type RemoteStreamCallback = (peerStreams: Map<string, MediaStream>) => void;
 
+export type CallConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'poor' | 'failed';
+export type CallConnectionQuality = 'unknown' | 'excellent' | 'good' | 'poor';
+
+export interface CallConnectionSnapshot {
+  status: CallConnectionStatus;
+  quality: CallConnectionQuality;
+  peerCount: number;
+  connectedPeers: number;
+  usingTurn: boolean;
+  roundTripTimeMs?: number;
+  packetLossPercent?: number;
+}
+
+interface PeerMediaExpectation {
+  expectsVideo: boolean;
+  expectsScreen: boolean;
+  speakingUntil: number;
+}
+
+interface PeerStatsSnapshot {
+  audioBytes: number;
+  videoBytes: number;
+  audioProgressAt: number;
+  videoProgressAt: number;
+  stalledChecks: number;
+  lastRecoveryAt: number;
+  recoveryAttempts: number;
+}
+
+type ConnectionSnapshotCallback = (snapshot: CallConnectionSnapshot) => void;
+
+let cachedDynamicIceServers: RTCIceServer[] | null = null;
+let dynamicIceServersExpiresAt = 0;
+let dynamicIceServersRequest: Promise<RTCIceServer[]> | null = null;
+
+const normalizeIceServers = (value: unknown): RTCIceServer[] => {
+  const source = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object'
+      ? ((value as { iceServers?: unknown; ice_servers?: unknown }).iceServers
+        ?? (value as { ice_servers?: unknown }).ice_servers)
+      : undefined;
+  if (!Array.isArray(source)) return [];
+
+  return source.flatMap((entry): RTCIceServer[] => {
+    if (!entry || typeof entry !== 'object') return [];
+    const candidate = entry as { urls?: unknown; url?: unknown; username?: unknown; credential?: unknown };
+    const rawUrls = candidate.urls ?? candidate.url;
+    const urls = (Array.isArray(rawUrls) ? rawUrls : [rawUrls])
+      .filter((url): url is string => typeof url === 'string')
+      .map((url) => url.trim())
+      .filter((url) => /^(stun|stuns|turn|turns):/i.test(url));
+    if (urls.length === 0) return [];
+    return [{
+      urls,
+      ...(typeof candidate.username === 'string' ? { username: candidate.username } : {}),
+      ...(typeof candidate.credential === 'string' ? { credential: candidate.credential } : {}),
+    }];
+  });
+};
+
+const loadDynamicIceServers = async (): Promise<RTCIceServer[]> => {
+  if (!turnCredentialsUrl) return [];
+  if (cachedDynamicIceServers && Date.now() < dynamicIceServersExpiresAt) {
+    return cachedDynamicIceServers;
+  }
+  if (dynamicIceServersRequest) return dynamicIceServersRequest;
+
+  dynamicIceServersRequest = (async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5_000);
+    try {
+      const { data } = await supabase.auth.getSession();
+      const response = await fetch(turnCredentialsUrl, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          ...(data.session?.access_token ? { Authorization: `Bearer ${data.session.access_token}` } : {}),
+        },
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json() as unknown;
+      const servers = normalizeIceServers(payload);
+      if (servers.length === 0) throw new Error('resposta sem servidores ICE válidos');
+      cachedDynamicIceServers = servers;
+      dynamicIceServersExpiresAt = Date.now() + 5 * 60_000;
+      return servers;
+    } catch (error) {
+      console.warn('[WebRTC] Dynamic TURN credentials unavailable; using static ICE servers:', error);
+      return [];
+    } finally {
+      clearTimeout(timeout);
+      dynamicIceServersRequest = null;
+    }
+  })();
+
+  return dynamicIceServersRequest;
+};
+
+const createRtcConfiguration = async (): Promise<RTCConfiguration> => {
+  const dynamicServers = await loadDynamicIceServers();
+  return {
+    ...RTC_CONFIG,
+    iceServers: [...BASE_ICE_SERVERS, ...dynamicServers],
+  };
+};
+
 class WebRTCManager {
   private localStream: MediaStream | null = null;
   private screenStream: MediaStream | null = null;
@@ -56,18 +167,34 @@ class WebRTCManager {
   private remotePeerTracks: Map<string, Map<string, MediaStreamTrack>> = new Map();
   private remoteStreams: Map<string, MediaStream> = new Map();
   private pendingIceCandidates: Map<string, RTCIceCandidateInit[]> = new Map();
+  private receivedIceCandidateKeys: Map<string, Set<string>> = new Map();
   private disconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private connectionTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private reconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private reconnectAttempts: Map<string, number> = new Map();
   private isMakingOffer: Map<string, boolean> = new Map();
+  private signalQueues: Map<string, Promise<void>> = new Map();
+  private ignoredOfferPeers = new Set<string>();
   private negotiationPending = new Set<string>();
   private iceRestartPending = new Set<string>();
   private expectedPeerIds = new Set<string>();
+  private peerMediaExpectations: Map<string, PeerMediaExpectation> = new Map();
+  private peerStats: Map<string, PeerStatsSnapshot> = new Map();
+  private senderQualityTiers: Map<RTCRtpSender, string> = new Map();
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
+  private statsCollectionRunning = false;
   private currentChannelId: string | null = null;
   private localUserId: string | null = null;
   private onRemoteStreamsChanged: RemoteStreamCallback | null = null;
   private onScreenShareEnded: (() => void) | null = null;
+  private onConnectionSnapshotChanged: ConnectionSnapshotCallback | null = null;
+  private lastConnectionSnapshot: CallConnectionSnapshot = {
+    status: 'connecting',
+    quality: 'unknown',
+    peerCount: 0,
+    connectedPeers: 0,
+    usingTurn: false,
+  };
 
   public setRemoteStreamCallback(cb: RemoteStreamCallback) {
     this.onRemoteStreamsChanged = cb;
@@ -75,6 +202,11 @@ class WebRTCManager {
 
   public setScreenShareEndedCallback(cb: (() => void) | null) {
     this.onScreenShareEnded = cb;
+  }
+
+  public setConnectionSnapshotCallback(cb: ConnectionSnapshotCallback | null) {
+    this.onConnectionSnapshotChanged = cb;
+    if (cb) cb(this.lastConnectionSnapshot);
   }
 
   /**
@@ -128,6 +260,8 @@ class WebRTCManager {
 
     const previousStream = this.localStream;
     this.localStream = nextStream;
+    this.localStream.getAudioTracks().forEach((track) => { track.contentHint = 'speech'; });
+    this.localStream.getVideoTracks().forEach((track) => { track.contentHint = 'motion'; });
     previousStream?.getTracks().forEach((track) => track.stop());
     await this.renegotiateAllPeers();
     return nextStream;
@@ -155,6 +289,7 @@ class WebRTCManager {
 
     const nextAudioTrack = stream.getAudioTracks()[0];
     if (!nextAudioTrack) throw new Error('O microfone selecionado não forneceu áudio.');
+    nextAudioTrack.contentHint = 'speech';
     if (!this.localStream) this.localStream = new MediaStream();
     this.localStream.getAudioTracks().forEach((track) => {
       track.stop();
@@ -180,27 +315,36 @@ class WebRTCManager {
       // In Electron desktop environment with a specific selected window or screen
       if (options?.sourceId) {
         try {
-          const stream = await (navigator.mediaDevices as any).getUserMedia({
-            audio: options.withAudio
-              ? {
-                  mandatory: {
-                    chromeMediaSource: 'desktop',
-                  },
-                }
-              : false,
+          // Electron's main process grants the source selected in our picker
+          // and provides Windows loopback audio through this standards API.
+          this.screenStream = await navigator.mediaDevices.getDisplayMedia({
+            audio: Boolean(options.withAudio),
             video: {
-              mandatory: {
-                chromeMediaSource: 'desktop',
-                chromeMediaSourceId: options.sourceId,
-                maxWidth: options?.resolution === '720p' ? 1280 : options?.resolution === '1080p' ? 1920 : 3840,
-                maxHeight: options?.resolution === '720p' ? 720 : options?.resolution === '1080p' ? 1080 : 2160,
-                maxFrameRate: fps,
-              },
+              width: { ideal: options?.resolution === '720p' ? 1280 : options?.resolution === '1080p' ? 1920 : 3840 },
+              height: { ideal: options?.resolution === '720p' ? 720 : options?.resolution === '1080p' ? 1080 : 2160 },
+              frameRate: { ideal: fps, max: fps },
             },
-          });
-          this.screenStream = stream;
-        } catch (desktopErr) {
-          console.warn('[WebRTC] getUserMedia desktop source failed, falling back to getDisplayMedia:', desktopErr);
+          } as DisplayMediaStreamOptions);
+        } catch (displayMediaError) {
+          console.warn('[WebRTC] Electron display capture failed, trying legacy source capture:', displayMediaError);
+          try {
+            this.screenStream = await (navigator.mediaDevices as any).getUserMedia({
+              audio: options.withAudio
+                ? { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: options.sourceId } }
+                : false,
+              video: {
+                mandatory: {
+                  chromeMediaSource: 'desktop',
+                  chromeMediaSourceId: options.sourceId,
+                  maxWidth: options?.resolution === '720p' ? 1280 : options?.resolution === '1080p' ? 1920 : 3840,
+                  maxHeight: options?.resolution === '720p' ? 720 : options?.resolution === '1080p' ? 1080 : 2160,
+                  maxFrameRate: fps,
+                },
+              },
+            });
+          } catch (legacyError) {
+            console.warn('[WebRTC] Legacy desktop source capture also failed:', legacyError);
+          }
         }
       }
 
@@ -243,11 +387,12 @@ class WebRTCManager {
 
       const videoTrack = this.screenStream.getVideoTracks()[0];
       if (videoTrack) {
-        videoTrack.contentHint = 'motion';
+        videoTrack.contentHint = fps >= 45 ? 'motion' : 'detail';
         videoTrack.onended = () => {
           void this.stopScreenShare().finally(() => this.onScreenShareEnded?.());
         };
       }
+      this.screenStream.getAudioTracks().forEach((track) => { track.contentHint = 'music'; });
 
       await this.renegotiateAllPeers();
       return this.screenStream;
@@ -298,6 +443,7 @@ class WebRTCManager {
 
         const newVideoTrack = videoStream.getVideoTracks()[0];
         if (newVideoTrack) {
+          newVideoTrack.contentHint = 'motion';
           if (!this.localStream) {
             this.localStream = new MediaStream();
           }
@@ -319,6 +465,45 @@ class WebRTCManager {
   public setChannel(channelId: string, localUserId: string) {
     this.currentChannelId = channelId;
     this.localUserId = localUserId;
+    this.startStatsMonitor();
+    this.emitConnectionSnapshot({ status: 'connecting', quality: 'unknown' });
+  }
+
+  public syncPeerMediaStates(peers: VoiceState[]): void {
+    const activePeerIds = new Set<string>();
+    for (const peer of peers) {
+      if (!peer.userId || peer.userId === this.localUserId) continue;
+      activePeerIds.add(peer.userId);
+      this.updatePeerMediaState(peer);
+    }
+    for (const peerId of this.peerMediaExpectations.keys()) {
+      if (!activePeerIds.has(peerId)) this.peerMediaExpectations.delete(peerId);
+    }
+  }
+
+  public updatePeerMediaState(peer: VoiceState): void {
+    if (!peer.userId || peer.userId === this.localUserId) return;
+    const previous = this.peerMediaExpectations.get(peer.userId);
+    this.peerMediaExpectations.set(peer.userId, {
+      expectsVideo: Boolean(peer.selfVideo || peer.selfScreen),
+      expectsScreen: Boolean(peer.selfScreen),
+      speakingUntil: peer.isSpeaking ? Date.now() + 6_000 : previous?.speakingUntil ?? 0,
+    });
+  }
+
+  public async retryAllConnections(): Promise<void> {
+    this.emitConnectionSnapshot({ status: 'reconnecting', quality: 'unknown' });
+    const tasks = [...this.expectedPeerIds].map(async (peerId) => {
+      const pc = this.peerConnections.get(peerId);
+      if (!pc || pc.connectionState === 'closed' || pc.connectionState === 'failed') {
+        this.removePeer(peerId, false);
+        await this.createPeerConnection(peerId, true);
+        return;
+      }
+      pc.restartIce();
+      await this.requestNegotiation(peerId, true);
+    });
+    await Promise.allSettled(tasks);
   }
 
   public async connectToPeers(peerUserIds: string[]) {
@@ -333,6 +518,7 @@ class WebRTCManager {
         await this.createPeerConnection(peerId, true);
       }
     }
+    this.emitConnectionSnapshot();
   }
 
   public async syncPeers(peerUserIds: string[]) {
@@ -342,12 +528,29 @@ class WebRTCManager {
       if (!expected.has(peerId)) this.removePeer(peerId, true);
     }
     await this.connectToPeers([...expected]);
+    this.emitConnectionSnapshot();
   }
 
   /**
    * Handle incoming WebRTC signaling message with Perfect Negotiation
    */
   public async handleSignal(payload: RTCSignalPayload) {
+    const peerId = payload.fromUserId;
+    if (!peerId) return;
+
+    const previous = this.signalQueues.get(peerId) ?? Promise.resolve();
+    const queued = previous
+      .catch(() => undefined)
+      .then(() => this.processSignal(payload));
+    this.signalQueues.set(peerId, queued);
+    try {
+      await queued;
+    } finally {
+      if (this.signalQueues.get(peerId) === queued) this.signalQueues.delete(peerId);
+    }
+  }
+
+  private async processSignal(payload: RTCSignalPayload) {
     const { fromUserId, signal, channelId } = payload;
     if (!fromUserId || (this.currentChannelId && channelId !== this.currentChannelId)) return;
 
@@ -360,9 +563,20 @@ class WebRTCManager {
     try {
       if (signal.type === 'ice-candidate') {
         if (!signal.candidate) return;
+        if (this.ignoredOfferPeers.has(fromUserId)) return;
+        const candidateKey = `${signal.candidate.usernameFragment ?? ''}:${signal.candidate.sdpMid ?? ''}:${signal.candidate.sdpMLineIndex ?? ''}:${signal.candidate.candidate}`;
+        const receivedKeys = this.receivedIceCandidateKeys.get(fromUserId) ?? new Set<string>();
+        if (receivedKeys.has(candidateKey)) return;
+        receivedKeys.add(candidateKey);
+        if (receivedKeys.size > 128) {
+          const oldestKey = receivedKeys.values().next().value;
+          if (oldestKey) receivedKeys.delete(oldestKey);
+        }
+        this.receivedIceCandidateKeys.set(fromUserId, receivedKeys);
         if (!pc || !pc.remoteDescription) {
           const queued = this.pendingIceCandidates.get(fromUserId) ?? [];
           queued.push(signal.candidate);
+          if (queued.length > 64) queued.splice(0, queued.length - 64);
           this.pendingIceCandidates.set(fromUserId, queued);
           return;
         }
@@ -385,8 +599,11 @@ class WebRTCManager {
 
         if (offerCollision && !isPolite) {
           console.log('[WebRTC] Impolite peer ignoring offer collision from:', fromUserId);
+          this.ignoredOfferPeers.add(fromUserId);
           return;
         }
+
+        this.ignoredOfferPeers.delete(fromUserId);
 
         if (offerCollision && isPolite) {
           console.log('[WebRTC] Polite peer yielding to offer collision from:', fromUserId);
@@ -406,9 +623,9 @@ class WebRTCManager {
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
 
-        wsClient.send(WSEvents.RTC_SIGNAL, {
+        await wsClient.sendRtcSignal({
           targetUserId: fromUserId,
-          channelId: this.currentChannelId,
+          channelId: this.currentChannelId ?? '',
           signal: {
             type: 'answer',
             sdp: answer.sdp,
@@ -416,6 +633,7 @@ class WebRTCManager {
         });
         await this.drainNegotiation(fromUserId);
       } else if (signal.type === 'answer' && pc && signal.sdp) {
+        this.ignoredOfferPeers.delete(fromUserId);
         if (pc.signalingState === 'have-local-offer') {
           await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: signal.sdp }));
           await this.flushPendingIceCandidates(fromUserId, pc);
@@ -431,6 +649,7 @@ class WebRTCManager {
     if (forget) this.expectedPeerIds.delete(userId);
     const pc = this.peerConnections.get(userId);
     if (pc) {
+      pc.getSenders().forEach((sender) => this.senderQualityTiers.delete(sender));
       pc.close();
       this.peerConnections.delete(userId);
     }
@@ -445,12 +664,18 @@ class WebRTCManager {
     this.reconnectTimers.delete(userId);
     if (forget) this.reconnectAttempts.delete(userId);
     this.pendingIceCandidates.delete(userId);
+    this.receivedIceCandidateKeys.delete(userId);
     this.isMakingOffer.delete(userId);
+    this.signalQueues.delete(userId);
+    this.ignoredOfferPeers.delete(userId);
     this.negotiationPending.delete(userId);
     this.iceRestartPending.delete(userId);
+    this.peerStats.delete(userId);
+    if (forget) this.peerMediaExpectations.delete(userId);
     this.remotePeerTracks.delete(userId);
     this.remoteStreams.delete(userId);
     this.notifyRemoteStreamsChanged();
+    this.emitConnectionSnapshot();
   }
 
   public leaveAll() {
@@ -474,18 +699,28 @@ class WebRTCManager {
     this.connectionTimeouts.clear();
     for (const timer of this.reconnectTimers.values()) clearTimeout(timer);
     this.reconnectTimers.clear();
+    if (this.statsTimer) clearInterval(this.statsTimer);
+    this.statsTimer = null;
+    this.statsCollectionRunning = false;
 
     this.remotePeerTracks.clear();
     this.remoteStreams.clear();
     this.pendingIceCandidates.clear();
+    this.receivedIceCandidateKeys.clear();
     this.isMakingOffer.clear();
+    this.signalQueues.clear();
+    this.ignoredOfferPeers.clear();
     this.negotiationPending.clear();
     this.iceRestartPending.clear();
     this.expectedPeerIds.clear();
     this.reconnectAttempts.clear();
+    this.peerMediaExpectations.clear();
+    this.peerStats.clear();
+    this.senderQualityTiers.clear();
     this.currentChannelId = null;
     this.localUserId = null;
     this.notifyRemoteStreamsChanged();
+    this.emitConnectionSnapshot({ status: 'connecting', quality: 'unknown' });
   }
 
   private ensureTransceivers(pc: RTCPeerConnection) {
@@ -506,7 +741,7 @@ class WebRTCManager {
     if (scheduledReconnect) clearTimeout(scheduledReconnect);
     this.reconnectTimers.delete(targetUserId);
 
-    const pc = new RTCPeerConnection(RTC_CONFIG);
+    const pc = new RTCPeerConnection(await createRtcConfiguration());
     this.peerConnections.set(targetUserId, pc);
     this.isMakingOffer.set(targetUserId, false);
 
@@ -516,15 +751,22 @@ class WebRTCManager {
     // ICE Candidate event
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        wsClient.send(WSEvents.RTC_SIGNAL, {
+        void wsClient.sendRtcSignal({
           targetUserId,
-          channelId: this.currentChannelId,
+          channelId: this.currentChannelId ?? '',
           signal: {
             type: 'ice-candidate',
             candidate: event.candidate.toJSON(),
           },
+        }).catch((error) => {
+          console.warn('[WebRTC] Failed to deliver ICE candidate:', targetUserId, error);
         });
       }
+    };
+    pc.onicecandidateerror = (event) => {
+      // Host lookup failures on one STUN server are harmless when another ICE
+      // server succeeds, but keeping the event visible helps diagnose TURN.
+      console.warn('[WebRTC] ICE candidate error:', event.url, event.errorCode, event.errorText);
     };
 
     // Remote Track event with Immutable MediaStream generation
@@ -564,7 +806,10 @@ class WebRTCManager {
     // Offers requested while another offer/answer exchange is underway are
     // drained as soon as signaling becomes stable instead of being discarded.
     pc.onsignalingstatechange = () => {
-      if (pc.signalingState === 'stable') void this.drainNegotiation(targetUserId);
+      if (pc.signalingState === 'stable') {
+        this.ignoredOfferPeers.delete(targetUserId);
+        void this.drainNegotiation(targetUserId);
+      }
     };
 
     // Connection state handler
@@ -577,15 +822,26 @@ class WebRTCManager {
         if (timeout) clearTimeout(timeout);
         this.connectionTimeouts.delete(targetUserId);
         this.reconnectAttempts.delete(targetUserId);
+        this.peerStats.set(targetUserId, {
+          audioBytes: 0,
+          videoBytes: 0,
+          audioProgressAt: Date.now(),
+          videoProgressAt: Date.now(),
+          stalledChecks: 0,
+          lastRecoveryAt: 0,
+          recoveryAttempts: 0,
+        });
       } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
         this.schedulePeerRecovery(targetUserId, pc, pc.connectionState === 'failed' ? 0 : 4_000);
       }
+      this.emitConnectionSnapshot();
     };
 
     pc.oniceconnectionstatechange = () => {
       if (pc.iceConnectionState === 'failed') {
         this.schedulePeerRecovery(targetUserId, pc, 0);
       }
+      this.emitConnectionSnapshot();
     };
 
     const connectionTimeout = setTimeout(() => {
@@ -636,32 +892,46 @@ class WebRTCManager {
     if (videoTransceiver) {
       if (videoTransceiver.sender.track !== activeVideoTrack) {
         await videoTransceiver.sender.replaceTrack(activeVideoTrack);
+        this.senderQualityTiers.delete(videoTransceiver.sender);
       }
       videoTransceiver.direction = 'sendrecv';
       if (activeVideoTrack) {
-        this.tuneVideoSender(videoTransceiver.sender, isScreen);
+        await this.tuneVideoSender(videoTransceiver.sender, isScreen, 'good');
       }
     }
   }
 
-  private tuneVideoSender(sender: RTCRtpSender, isScreen: boolean) {
+  private async tuneVideoSender(
+    sender: RTCRtpSender,
+    isScreen: boolean,
+    quality: CallConnectionQuality,
+  ): Promise<void> {
+    const tierKey = `${isScreen ? 'screen' : 'camera'}:${quality}`;
+    if (this.senderQualityTiers.get(sender) === tierKey) return;
     try {
       const params = sender.getParameters();
       if (!params.encodings || params.encodings.length === 0) {
         params.encodings = [{}];
       }
+      const constrained = quality === 'poor';
+      const sourceFps = Math.max(15, Math.round(sender.track?.getSettings().frameRate ?? 30));
       if (isScreen) {
-        params.encodings[0].maxBitrate = 3_500_000;
+        params.encodings[0].maxBitrate = constrained ? 1_200_000 : 3_000_000;
+        params.encodings[0].maxFramerate = constrained ? Math.min(20, sourceFps) : Math.min(60, sourceFps);
+        params.encodings[0].scaleResolutionDownBy = constrained ? 1.5 : 1;
         params.encodings[0].networkPriority = 'high';
-        params.degradationPreference = 'maintain-framerate';
+        params.degradationPreference = 'maintain-resolution';
       } else {
-        params.encodings[0].maxBitrate = 1_500_000;
+        params.encodings[0].maxBitrate = constrained ? 550_000 : 1_500_000;
+        params.encodings[0].maxFramerate = constrained ? Math.min(20, sourceFps) : Math.min(30, sourceFps);
+        params.encodings[0].scaleResolutionDownBy = constrained ? 2 : 1;
         params.encodings[0].networkPriority = 'medium';
         params.degradationPreference = 'balanced';
       }
-      sender.setParameters(params).catch(() => undefined);
-    } catch {
-      // Safe ignore
+      await sender.setParameters(params);
+      this.senderQualityTiers.set(sender, tierKey);
+    } catch (error) {
+      console.warn('[WebRTC] Could not apply adaptive video parameters:', error);
     }
   }
 
@@ -701,9 +971,9 @@ class WebRTCManager {
       }
       await pc.setLocalDescription(offer);
 
-      wsClient.send(WSEvents.RTC_SIGNAL, {
+      await wsClient.sendRtcSignal({
         targetUserId,
-        channelId: this.currentChannelId,
+        channelId: this.currentChannelId ?? '',
         signal: {
           type: 'offer',
           sdp: pc.localDescription?.sdp ?? offer.sdp,
@@ -740,9 +1010,11 @@ class WebRTCManager {
 
       const attempt = (this.reconnectAttempts.get(targetUserId) ?? 0) + 1;
       this.reconnectAttempts.set(targetUserId, attempt);
+      this.emitConnectionSnapshot({ status: attempt >= 4 ? 'failed' : 'reconnecting' });
 
       // First try the inexpensive path, retaining existing media/transceivers.
       if (attempt === 1 && pc.signalingState === 'stable') {
+        pc.restartIce();
         void this.requestNegotiation(targetUserId, true);
         this.schedulePeerRecovery(targetUserId, pc, 6_000);
         return;
@@ -769,9 +1041,193 @@ class WebRTCManager {
       if (!this.expectedPeerIds.has(targetUserId) || this.peerConnections.has(targetUserId)) return;
       void this.createPeerConnection(targetUserId, true).catch((error) => {
         console.warn('[WebRTC] Failed to recreate peer connection:', targetUserId, error);
+        this.reconnectAttempts.set(targetUserId, (this.reconnectAttempts.get(targetUserId) ?? 0) + 1);
         this.scheduleReconnect(targetUserId);
       });
     }, delay));
+  }
+
+  private startStatsMonitor(): void {
+    if (this.statsTimer) return;
+    this.statsTimer = setInterval(() => void this.collectConnectionStats(), 3_000);
+    void this.collectConnectionStats();
+  }
+
+  private async collectConnectionStats(): Promise<void> {
+    if (this.statsCollectionRunning) return;
+    this.statsCollectionRunning = true;
+
+    try {
+      const now = Date.now();
+      const roundTripTimes: number[] = [];
+      let totalPacketsReceived = 0;
+      let totalPacketsLost = 0;
+      let usingTurn = false;
+
+      for (const [peerId, pc] of this.peerConnections) {
+        if (pc.connectionState !== 'connected') continue;
+
+        try {
+          const report = await pc.getStats();
+          let audioBytes = 0;
+          let videoBytes = 0;
+          let peerPacketsReceived = 0;
+          let peerPacketsLost = 0;
+          let selectedPair: any = null;
+
+          report.forEach((stat: any) => {
+            if (stat.type === 'inbound-rtp' && !stat.isRemote) {
+              const kind = stat.kind ?? stat.mediaType;
+              if (kind === 'audio') audioBytes += Number(stat.bytesReceived ?? 0);
+              if (kind === 'video') videoBytes += Number(stat.bytesReceived ?? 0);
+              peerPacketsReceived += Number(stat.packetsReceived ?? 0);
+              peerPacketsLost += Math.max(0, Number(stat.packetsLost ?? 0));
+            }
+            if (
+              stat.type === 'candidate-pair' &&
+              stat.state === 'succeeded' &&
+              (stat.selected || stat.nominated)
+            ) {
+              selectedPair = stat;
+            }
+          });
+
+          if (selectedPair) {
+            const rttSeconds = Number(selectedPair.currentRoundTripTime ?? 0);
+            if (rttSeconds > 0) roundTripTimes.push(rttSeconds * 1_000);
+            const remoteCandidate = report.get(selectedPair.remoteCandidateId) as any;
+            if (remoteCandidate?.candidateType === 'relay') usingTurn = true;
+          }
+
+          totalPacketsReceived += peerPacketsReceived;
+          totalPacketsLost += peerPacketsLost;
+          const peerLoss = peerPacketsLost / Math.max(1, peerPacketsReceived + peerPacketsLost);
+          const peerRtt = selectedPair ? Number(selectedPair.currentRoundTripTime ?? 0) * 1_000 : 0;
+          const peerQuality: CallConnectionQuality = peerLoss > 0.1 || peerRtt > 700
+            ? 'poor'
+            : peerLoss > 0.04 || peerRtt > 300
+              ? 'good'
+              : 'excellent';
+          const isScreen = Boolean(this.screenStream?.getVideoTracks()[0]);
+          for (const sender of pc.getSenders()) {
+            if (sender.track?.kind === 'video') {
+              await this.tuneVideoSender(sender, isScreen, peerQuality === 'poor' ? 'poor' : 'good');
+            }
+          }
+
+          const previous = this.peerStats.get(peerId) ?? {
+            audioBytes,
+            videoBytes,
+            audioProgressAt: now,
+            videoProgressAt: now,
+            stalledChecks: 0,
+            lastRecoveryAt: 0,
+            recoveryAttempts: 0,
+          };
+          const audioProgressed = audioBytes > previous.audioBytes;
+          const videoProgressed = videoBytes > previous.videoBytes;
+          if (audioProgressed) previous.audioProgressAt = now;
+          if (videoProgressed) previous.videoProgressAt = now;
+          previous.audioBytes = audioBytes;
+          previous.videoBytes = videoBytes;
+
+          const expectation = this.peerMediaExpectations.get(peerId);
+          const stalledAudio = Boolean(
+            expectation && expectation.speakingUntil > now && now - previous.audioProgressAt > 6_000,
+          );
+          const stalledVideo = Boolean(
+            expectation?.expectsVideo && now - previous.videoProgressAt > (expectation.expectsScreen ? 8_000 : 12_000),
+          );
+          if (stalledAudio || stalledVideo) {
+            previous.stalledChecks += 1;
+          } else {
+            previous.stalledChecks = 0;
+            if (audioProgressed || videoProgressed) previous.recoveryAttempts = 0;
+          }
+          this.peerStats.set(peerId, previous);
+
+          if (
+            previous.stalledChecks >= 2 &&
+            now - previous.lastRecoveryAt > 12_000
+          ) {
+            previous.lastRecoveryAt = now;
+            previous.stalledChecks = 0;
+            previous.recoveryAttempts += 1;
+            void this.recoverStalledMedia(peerId, pc, previous.recoveryAttempts);
+          }
+        } catch (error) {
+          console.warn('[WebRTC] Could not collect peer statistics:', peerId, error);
+        }
+      }
+
+      const averageRtt = roundTripTimes.length
+        ? roundTripTimes.reduce((sum, value) => sum + value, 0) / roundTripTimes.length
+        : undefined;
+      const packetLoss = totalPacketsLost / Math.max(1, totalPacketsReceived + totalPacketsLost);
+      const quality: CallConnectionQuality = totalPacketsReceived === 0
+        ? 'unknown'
+        : packetLoss > 0.1 || (averageRtt ?? 0) > 700
+          ? 'poor'
+          : packetLoss > 0.04 || (averageRtt ?? 0) > 300
+            ? 'good'
+            : 'excellent';
+
+      this.emitConnectionSnapshot({
+        quality,
+        usingTurn,
+        roundTripTimeMs: averageRtt ? Math.round(averageRtt) : undefined,
+        packetLossPercent: totalPacketsReceived > 0 ? Math.round(packetLoss * 1_000) / 10 : undefined,
+      });
+    } finally {
+      this.statsCollectionRunning = false;
+    }
+  }
+
+  private async recoverStalledMedia(
+    peerId: string,
+    pc: RTCPeerConnection,
+    recoveryAttempt: number,
+  ): Promise<void> {
+    if (this.peerConnections.get(peerId) !== pc || !this.expectedPeerIds.has(peerId)) return;
+    this.emitConnectionSnapshot({ status: 'reconnecting', quality: 'poor' });
+
+    if (recoveryAttempt === 1 && pc.connectionState === 'connected') {
+      pc.restartIce();
+      await this.requestNegotiation(peerId, true);
+      return;
+    }
+
+    this.removePeer(peerId, false);
+    this.scheduleReconnect(peerId);
+  }
+
+  private emitConnectionSnapshot(overrides: Partial<CallConnectionSnapshot> = {}): void {
+    const peerCount = this.expectedPeerIds.size;
+    const connectedPeers = [...this.expectedPeerIds]
+      .filter((peerId) => this.peerConnections.get(peerId)?.connectionState === 'connected')
+      .length;
+    const maximumAttempts = Math.max(0, ...this.reconnectAttempts.values());
+    const quality = overrides.quality ?? this.lastConnectionSnapshot.quality;
+    const derivedStatus: CallConnectionStatus = peerCount === 0 || connectedPeers === peerCount
+      ? (quality === 'poor' ? 'poor' : 'connected')
+      : maximumAttempts >= 4
+        ? 'failed'
+        : connectedPeers > 0 || maximumAttempts > 0
+          ? 'reconnecting'
+          : 'connecting';
+    const status = overrides.status ?? (quality === 'poor' && derivedStatus === 'connected' ? 'poor' : derivedStatus);
+
+    const next: CallConnectionSnapshot = {
+      ...this.lastConnectionSnapshot,
+      ...overrides,
+      status,
+      quality,
+      peerCount,
+      connectedPeers,
+    };
+    if (JSON.stringify(next) === JSON.stringify(this.lastConnectionSnapshot)) return;
+    this.lastConnectionSnapshot = next;
+    this.onConnectionSnapshotChanged?.(next);
   }
 
   private async flushPendingIceCandidates(userId: string, pc: RTCPeerConnection) {

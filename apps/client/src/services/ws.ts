@@ -11,6 +11,7 @@ import {
   type UserSummary,
   type VoiceState,
   type WSEventName,
+  type RTCSignalPayload,
 } from '@gdisc/shared';
 import { getMessageById } from './api.js';
 import { supabase } from './supabase.js';
@@ -374,6 +375,36 @@ class RealtimeClient {
     const serverId = data.serverId ?? this.channelToServer.get(data.channelId);
     const channel = serverId ? this.serverChannels.get(serverId) : undefined;
     if (channel) this.broadcast(channel, event, data);
+  }
+
+  public async sendRtcSignal(
+    data: Omit<RTCSignalPayload, 'fromUserId'>,
+  ): Promise<void> {
+    const channel = this.voiceChannel;
+    if (!channel || !this.identity) throw new Error('Canal de sinalização da chamada indisponível.');
+    await this.channelReady.get(channel);
+
+    let lastStatus = 'error';
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        lastStatus = await channel.send({
+          type: 'broadcast',
+          event: WSEvents.RTC_SIGNAL,
+          payload: { ...data, fromUserId: this.identity.id },
+        });
+        if (lastStatus === 'ok') return;
+      } catch (error) {
+        if (attempt === 2) {
+          this.emit('connection:error', { event: WSEvents.RTC_SIGNAL, error });
+          throw error;
+        }
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+    }
+
+    const error = new Error(`Falha ao enviar sinal WebRTC: ${lastStatus}`);
+    this.emit('connection:error', { event: WSEvents.RTC_SIGNAL, status: lastStatus });
+    throw error;
   }
 
   public async joinVoice(data: any): Promise<void> {
