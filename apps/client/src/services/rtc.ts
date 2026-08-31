@@ -6,7 +6,12 @@
 
 import { wsClient } from './ws.js';
 import { supabase } from './supabase.js';
-import { type RTCSignalPayload } from '@gdisc/shared';
+import {
+  getRtcNegotiationRetryDelay,
+  matchesRtcConnection,
+  shouldInitiateRtcConnection,
+  type RTCSignalPayload,
+} from '@gdisc/shared';
 import type { VoiceState } from '@gdisc/shared';
 import { platformCapabilities } from '../utils/platform.js';
 
@@ -78,6 +83,11 @@ interface PeerStatsSnapshot {
   stalledChecks: number;
   lastRecoveryAt: number;
   recoveryAttempts: number;
+}
+
+interface PendingIceCandidate {
+  connectionId?: string;
+  candidate: RTCIceCandidateInit;
 }
 
 type ConnectionSnapshotCallback = (snapshot: CallConnectionSnapshot) => void;
@@ -166,8 +176,9 @@ class WebRTCManager {
   private peerConnections: Map<string, RTCPeerConnection> = new Map();
   private remotePeerTracks: Map<string, Map<string, MediaStreamTrack>> = new Map();
   private remoteStreams: Map<string, MediaStream> = new Map();
-  private pendingIceCandidates: Map<string, RTCIceCandidateInit[]> = new Map();
+  private pendingIceCandidates: Map<string, PendingIceCandidate[]> = new Map();
   private receivedIceCandidateKeys: Map<string, Set<string>> = new Map();
+  private peerConnectionIds: Map<string, string> = new Map();
   private disconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private connectionTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private reconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
@@ -177,6 +188,8 @@ class WebRTCManager {
   private ignoredOfferPeers = new Set<string>();
   private negotiationPending = new Set<string>();
   private iceRestartPending = new Set<string>();
+  private negotiationRetryTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  private negotiationRetryAttempts: Map<string, number> = new Map();
   private expectedPeerIds = new Set<string>();
   private peerMediaExpectations: Map<string, PeerMediaExpectation> = new Map();
   private peerStats: Map<string, PeerStatsSnapshot> = new Map();
@@ -497,7 +510,12 @@ class WebRTCManager {
    * interruption, which otherwise causes SDP glare and black remote media.
    */
   private shouldInitiateFor(peerId: string): boolean {
-    return Boolean(this.localUserId && this.localUserId.localeCompare(peerId) < 0);
+    return Boolean(this.localUserId && shouldInitiateRtcConnection(this.localUserId, peerId));
+  }
+
+  private createConnectionId(): string {
+    return globalThis.crypto?.randomUUID?.()
+      ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   }
 
   public async retryAllConnections(): Promise<void> {
@@ -563,7 +581,7 @@ class WebRTCManager {
   }
 
   private async processSignal(payload: RTCSignalPayload) {
-    const { fromUserId, signal, channelId } = payload;
+    const { fromUserId, signal, channelId, connectionId } = payload;
     if (!fromUserId || (this.currentChannelId && channelId !== this.currentChannelId)) return;
 
     // A valid signal can arrive a few milliseconds before the Presence sync.
@@ -576,7 +594,8 @@ class WebRTCManager {
       if (signal.type === 'ice-candidate') {
         if (!signal.candidate) return;
         if (this.ignoredOfferPeers.has(fromUserId)) return;
-        const candidateKey = `${signal.candidate.usernameFragment ?? ''}:${signal.candidate.sdpMid ?? ''}:${signal.candidate.sdpMLineIndex ?? ''}:${signal.candidate.candidate}`;
+        const activeConnectionId = this.peerConnectionIds.get(fromUserId);
+        const candidateKey = `${connectionId ?? 'legacy'}:${signal.candidate.usernameFragment ?? ''}:${signal.candidate.sdpMid ?? ''}:${signal.candidate.sdpMLineIndex ?? ''}:${signal.candidate.candidate}`;
         const receivedKeys = this.receivedIceCandidateKeys.get(fromUserId) ?? new Set<string>();
         if (receivedKeys.has(candidateKey)) return;
         receivedKeys.add(candidateKey);
@@ -585,9 +604,9 @@ class WebRTCManager {
           if (oldestKey) receivedKeys.delete(oldestKey);
         }
         this.receivedIceCandidateKeys.set(fromUserId, receivedKeys);
-        if (!pc || !pc.remoteDescription) {
+        if (!pc || !pc.remoteDescription || Boolean(connectionId && activeConnectionId !== connectionId)) {
           const queued = this.pendingIceCandidates.get(fromUserId) ?? [];
-          queued.push(signal.candidate);
+          queued.push({ connectionId, candidate: signal.candidate });
           if (queued.length > 64) queued.splice(0, queued.length - 64);
           this.pendingIceCandidates.set(fromUserId, queued);
           return;
@@ -603,6 +622,14 @@ class WebRTCManager {
         }
         if (!pc) {
           pc = await this.createPeerConnection(fromUserId, false);
+        }
+
+        if (connectionId) {
+          const previousConnectionId = this.peerConnectionIds.get(fromUserId);
+          if (previousConnectionId !== connectionId) {
+            this.peerConnectionIds.set(fromUserId, connectionId);
+            this.receivedIceCandidateKeys.delete(fromUserId);
+          }
         }
 
         const isPolite = Boolean(this.localUserId && this.localUserId.localeCompare(fromUserId) > 0);
@@ -638,6 +665,7 @@ class WebRTCManager {
         await wsClient.sendRtcSignal({
           targetUserId: fromUserId,
           channelId: this.currentChannelId ?? '',
+          connectionId: this.peerConnectionIds.get(fromUserId),
           signal: {
             type: 'answer',
             sdp: answer.sdp,
@@ -645,6 +673,11 @@ class WebRTCManager {
         });
         await this.drainNegotiation(fromUserId);
       } else if (signal.type === 'answer' && pc && signal.sdp) {
+        const activeConnectionId = this.peerConnectionIds.get(fromUserId);
+        if (!matchesRtcConnection(activeConnectionId, connectionId)) {
+          console.warn('[WebRTC] Ignoring stale answer from previous connection:', fromUserId);
+          return;
+        }
         this.ignoredOfferPeers.delete(fromUserId);
         if (pc.signalingState === 'have-local-offer') {
           await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: signal.sdp }));
@@ -677,11 +710,16 @@ class WebRTCManager {
     if (forget) this.reconnectAttempts.delete(userId);
     this.pendingIceCandidates.delete(userId);
     this.receivedIceCandidateKeys.delete(userId);
+    this.peerConnectionIds.delete(userId);
     this.isMakingOffer.delete(userId);
     this.signalQueues.delete(userId);
     this.ignoredOfferPeers.delete(userId);
     this.negotiationPending.delete(userId);
     this.iceRestartPending.delete(userId);
+    const negotiationRetryTimer = this.negotiationRetryTimers.get(userId);
+    if (negotiationRetryTimer) clearTimeout(negotiationRetryTimer);
+    this.negotiationRetryTimers.delete(userId);
+    this.negotiationRetryAttempts.delete(userId);
     this.peerStats.delete(userId);
     if (forget) this.peerMediaExpectations.delete(userId);
     this.remotePeerTracks.delete(userId);
@@ -719,11 +757,15 @@ class WebRTCManager {
     this.remoteStreams.clear();
     this.pendingIceCandidates.clear();
     this.receivedIceCandidateKeys.clear();
+    this.peerConnectionIds.clear();
     this.isMakingOffer.clear();
     this.signalQueues.clear();
     this.ignoredOfferPeers.clear();
     this.negotiationPending.clear();
     this.iceRestartPending.clear();
+    for (const timer of this.negotiationRetryTimers.values()) clearTimeout(timer);
+    this.negotiationRetryTimers.clear();
+    this.negotiationRetryAttempts.clear();
     this.expectedPeerIds.clear();
     this.reconnectAttempts.clear();
     this.peerMediaExpectations.clear();
@@ -755,6 +797,7 @@ class WebRTCManager {
 
     const pc = new RTCPeerConnection(await createRtcConfiguration());
     this.peerConnections.set(targetUserId, pc);
+    this.peerConnectionIds.set(targetUserId, this.createConnectionId());
     this.isMakingOffer.set(targetUserId, false);
 
     this.ensureTransceivers(pc);
@@ -766,6 +809,7 @@ class WebRTCManager {
         void wsClient.sendRtcSignal({
           targetUserId,
           channelId: this.currentChannelId ?? '',
+          connectionId: this.peerConnectionIds.get(targetUserId),
           signal: {
             type: 'ice-candidate',
             candidate: event.candidate.toJSON(),
@@ -979,6 +1023,7 @@ class WebRTCManager {
       if (this.peerConnections.get(targetUserId) !== pc || pc.signalingState !== 'stable') {
         this.negotiationPending.add(targetUserId);
         if (restartIce) this.iceRestartPending.add(targetUserId);
+        this.scheduleNegotiationRetry(targetUserId);
         return;
       }
       await pc.setLocalDescription(offer);
@@ -986,23 +1031,37 @@ class WebRTCManager {
       await wsClient.sendRtcSignal({
         targetUserId,
         channelId: this.currentChannelId ?? '',
+        connectionId: this.peerConnectionIds.get(targetUserId),
         signal: {
           type: 'offer',
           sdp: pc.localDescription?.sdp ?? offer.sdp,
         },
       });
+      this.negotiationRetryAttempts.delete(targetUserId);
+      const retryTimer = this.negotiationRetryTimers.get(targetUserId);
+      if (retryTimer) clearTimeout(retryTimer);
+      this.negotiationRetryTimers.delete(targetUserId);
     } catch (error) {
       if (this.peerConnections.get(targetUserId) === pc) {
         this.negotiationPending.add(targetUserId);
         if (restartIce) this.iceRestartPending.add(targetUserId);
         console.warn('[WebRTC] Failed to negotiate with peer:', targetUserId, error);
+        this.scheduleNegotiationRetry(targetUserId);
       }
     } finally {
       this.isMakingOffer.set(targetUserId, false);
-      if (this.negotiationPending.has(targetUserId)) {
-        setTimeout(() => void this.drainNegotiation(targetUserId), 100);
-      }
     }
+  }
+
+  private scheduleNegotiationRetry(targetUserId: string): void {
+    if (this.negotiationRetryTimers.has(targetUserId) || !this.expectedPeerIds.has(targetUserId)) return;
+    const attempt = Math.min((this.negotiationRetryAttempts.get(targetUserId) ?? 0) + 1, 6);
+    this.negotiationRetryAttempts.set(targetUserId, attempt);
+    const delay = getRtcNegotiationRetryDelay(attempt);
+    this.negotiationRetryTimers.set(targetUserId, setTimeout(() => {
+      this.negotiationRetryTimers.delete(targetUserId);
+      void this.drainNegotiation(targetUserId);
+    }, delay));
   }
 
   private schedulePeerRecovery(
@@ -1258,9 +1317,11 @@ class WebRTCManager {
   private async flushPendingIceCandidates(userId: string, pc: RTCPeerConnection) {
     const queued = this.pendingIceCandidates.get(userId) ?? [];
     this.pendingIceCandidates.delete(userId);
-    for (const candidate of queued) {
+    const activeConnectionId = this.peerConnectionIds.get(userId);
+    for (const pending of queued) {
+      if (!matchesRtcConnection(activeConnectionId, pending.connectionId)) continue;
       try {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        await pc.addIceCandidate(new RTCIceCandidate(pending.candidate));
       } catch (e) {
         console.warn('[WebRTC] Failed to add ICE candidate:', e);
       }

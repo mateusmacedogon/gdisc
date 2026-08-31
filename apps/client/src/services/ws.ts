@@ -33,6 +33,7 @@ class RealtimeClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private voiceReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private voiceSubscribed = false;
+  private voicePresenceLeaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private presenceQueues = new WeakMap<RealtimeChannel, Promise<void>>();
   private lastPresenceTrackAt = new WeakMap<RealtimeChannel, number>();
   private disconnecting = false;
@@ -439,12 +440,26 @@ class RealtimeClient {
       .on('presence', { event: 'sync' }, () => this.emitVoiceRoom(channel))
       .on('presence', { event: 'join' }, ({ newPresences }: any) => {
         for (const state of newPresences ?? []) {
+          const leaveTimer = this.voicePresenceLeaveTimers.get(state.userId);
+          if (leaveTimer) clearTimeout(leaveTimer);
+          this.voicePresenceLeaveTimers.delete(state.userId);
           if (state.userId !== this.identity?.id) this.emit(WSEvents.VOICE_USER_JOINED, { voiceState: state });
         }
       })
       .on('presence', { event: 'leave' }, ({ leftPresences }: any) => {
         for (const state of leftPresences ?? []) {
-          this.emit(WSEvents.VOICE_USER_LEFT, { channelId: data.channelId, userId: state.userId });
+          if (!state.userId) continue;
+          const previous = this.voicePresenceLeaveTimers.get(state.userId);
+          if (previous) clearTimeout(previous);
+          this.voicePresenceLeaveTimers.set(state.userId, setTimeout(() => {
+            this.voicePresenceLeaveTimers.delete(state.userId);
+            if (this.voiceChannel !== channel) return;
+            const isStillPresent = (Object.values(channel.presenceState()).flat() as any[])
+              .some((presence) => presence?.userId === state.userId);
+            if (!isStillPresent) {
+              this.emit(WSEvents.VOICE_USER_LEFT, { channelId: data.channelId, userId: state.userId });
+            }
+          }, 750));
         }
       });
     this.voiceChannel = channel;
@@ -504,7 +519,13 @@ class RealtimeClient {
     if (!this.voiceState) return;
     const entries = Object.values(channel.presenceState()).flat() as unknown as VoiceState[];
     const byUser = new Map<string, VoiceState>();
-    for (const state of entries) if (state.userId) byUser.set(state.userId, state);
+    for (const state of entries) {
+      if (!state.userId) continue;
+      byUser.set(state.userId, state);
+      const leaveTimer = this.voicePresenceLeaveTimers.get(state.userId);
+      if (leaveTimer) clearTimeout(leaveTimer);
+      this.voicePresenceLeaveTimers.delete(state.userId);
+    }
     this.emit(WSEvents.VOICE_ROOM_USERS, {
       channelId: this.voiceState.channelId,
       serverId: this.voiceState.serverId,
@@ -516,6 +537,8 @@ class RealtimeClient {
     if (this.voiceReconnectTimer) clearTimeout(this.voiceReconnectTimer);
     this.voiceReconnectTimer = null;
     this.voiceSubscribed = false;
+    for (const timer of this.voicePresenceLeaveTimers.values()) clearTimeout(timer);
+    this.voicePresenceLeaveTimers.clear();
     const channel = this.voiceChannel;
     const voiceState = this.voiceState;
     if (!channel) {
@@ -597,21 +620,32 @@ class RealtimeClient {
     await queued;
   }
 
-  private scheduleVoiceRecovery(channel: RealtimeChannel): void {
-    if (this.disconnecting || this.voiceReconnectTimer || this.voiceChannel !== channel) return;
+  private scheduleVoiceRecovery(channel: RealtimeChannel | null): void {
+    if (
+      this.disconnecting
+      || this.voiceReconnectTimer
+      || (channel && this.voiceChannel !== channel)
+      || !this.voiceState
+    ) return;
     this.voiceReconnectTimer = setTimeout(() => {
       this.voiceReconnectTimer = null;
-      if (this.disconnecting || this.voiceSubscribed || this.voiceChannel !== channel || !this.voiceState) return;
+      if (
+        this.disconnecting
+        || this.voiceSubscribed
+        || (channel && this.voiceChannel !== channel)
+        || !this.voiceState
+      ) return;
 
       const state = { ...this.voiceState };
       this.voiceChannel = null;
-      void supabase.removeChannel(channel).finally(() => {
+      const removal = channel ? supabase.removeChannel(channel) : Promise.resolve('ok' as const);
+      void removal.finally(() => {
         void this.joinVoice(state).catch((error) => {
           this.emit('connection:error', { event: 'voice:reconnect', error });
           this.voiceState = state;
-          this.voiceChannel = channel;
+          this.voiceChannel = null;
           this.voiceSubscribed = false;
-          this.scheduleVoiceRecovery(channel);
+          this.scheduleVoiceRecovery(null);
         });
       });
     }, 2_000);

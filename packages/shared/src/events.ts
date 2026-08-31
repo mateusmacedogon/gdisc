@@ -57,6 +57,8 @@ export interface RTCSignalPayload {
   targetUserId: string;
   fromUserId?: string;
   channelId: string;
+  /** Identifies one peer-connection generation so delayed signals are ignored. */
+  connectionId?: string;
   signal: {
     type: RTCSignalType;
     sdp?: string;
