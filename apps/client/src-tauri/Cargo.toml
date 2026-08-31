@@ -1,6 +1,6 @@
 [package]
 name = "gdisc"
-version = "1.0.1"
+version = "1.0.2"
 description = "GDisC - Ultra-fast, lightweight real-time communication platform"
 authors = ["GDisC Team"]
 edition = "2021"

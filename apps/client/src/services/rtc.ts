@@ -491,9 +491,21 @@ class WebRTCManager {
     });
   }
 
+  /**
+   * A pair must have one stable offerer. Keeping this decision deterministic
+   * prevents both browsers from restarting ICE at once after a short network
+   * interruption, which otherwise causes SDP glare and black remote media.
+   */
+  private shouldInitiateFor(peerId: string): boolean {
+    return Boolean(this.localUserId && this.localUserId.localeCompare(peerId) < 0);
+  }
+
   public async retryAllConnections(): Promise<void> {
     this.emitConnectionSnapshot({ status: 'reconnecting', quality: 'unknown' });
     const tasks = [...this.expectedPeerIds].map(async (peerId) => {
+      // The answering peer waits for the deterministic offerer. Starting an
+      // ICE restart from both ends is a frequent source of unstable calls.
+      if (!this.shouldInitiateFor(peerId)) return;
       const pc = this.peerConnections.get(peerId);
       if (!pc || pc.connectionState === 'closed' || pc.connectionState === 'failed') {
         this.removePeer(peerId, false);
@@ -514,7 +526,7 @@ class WebRTCManager {
       const existing = this.peerConnections.get(peerId);
       if (existing && existing.connectionState !== 'closed' && existing.connectionState !== 'failed') continue;
 
-      if (this.localUserId.localeCompare(peerId) < 0) {
+      if (this.shouldInitiateFor(peerId)) {
         await this.createPeerConnection(peerId, true);
       }
     }
@@ -1012,6 +1024,11 @@ class WebRTCManager {
       this.reconnectAttempts.set(targetUserId, attempt);
       this.emitConnectionSnapshot({ status: attempt >= 4 ? 'failed' : 'reconnecting' });
 
+      // Only the elected offerer is allowed to start recovery negotiation.
+      // The other peer keeps its transceivers and waits for that offer, which
+      // avoids simultaneous ICE restarts on every transient disconnect.
+      if (!this.shouldInitiateFor(targetUserId)) return;
+
       // First try the inexpensive path, retaining existing media/transceivers.
       if (attempt === 1 && pc.signalingState === 'stable') {
         pc.restartIce();
@@ -1028,7 +1045,11 @@ class WebRTCManager {
   }
 
   private scheduleReconnect(targetUserId: string): void {
-    if (!this.expectedPeerIds.has(targetUserId) || !this.localUserId) return;
+    if (
+      !this.expectedPeerIds.has(targetUserId)
+      || !this.localUserId
+      || !this.shouldInitiateFor(targetUserId)
+    ) return;
 
     const previous = this.reconnectTimers.get(targetUserId);
     if (previous) clearTimeout(previous);
@@ -1190,6 +1211,10 @@ class WebRTCManager {
   ): Promise<void> {
     if (this.peerConnections.get(peerId) !== pc || !this.expectedPeerIds.has(peerId)) return;
     this.emitConnectionSnapshot({ status: 'reconnecting', quality: 'poor' });
+
+    // Media watchdogs run on both browsers. Let a single side repair the
+    // peer connection so two simultaneous recovery offers cannot collide.
+    if (!this.shouldInitiateFor(peerId)) return;
 
     if (recoveryAttempt === 1 && pc.connectionState === 'connected') {
       pc.restartIce();

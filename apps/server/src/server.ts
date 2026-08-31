@@ -63,7 +63,7 @@ async function bootstrap() {
     const getHealthData = () => ({
       status: 'ok',
       app: 'GDisC Server',
-      version: '1.0.1',
+      version: '1.0.2',
       uptimeSeconds: Math.floor(process.uptime()),
       memory: process.memoryUsage(),
       timestamp: new Date().toISOString(),
