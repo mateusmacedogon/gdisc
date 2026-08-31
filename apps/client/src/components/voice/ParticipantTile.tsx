@@ -73,17 +73,26 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
     )
   );
 
-  // Sync video stream to regular tile
+  // Sync video stream to regular tile with unconditional native DOM attributes for web autoplay
   useEffect(() => {
     const video = videoRef.current;
     if (video) {
+      video.muted = true;
+      video.defaultMuted = true;
+      video.playsInline = true;
+      video.setAttribute('playsinline', '');
+      video.setAttribute('muted', '');
+
       if (mediaStream) {
         if (video.srcObject !== mediaStream) {
           video.srcObject = mediaStream;
         }
-        void video.play().catch(() => undefined);
-      } else {
-        video.srcObject = null;
+        const playPromise = video.play();
+        if (playPromise !== undefined) {
+          playPromise.catch((err) => {
+            console.warn('[ParticipantTile] Video play:', err);
+          });
+        }
       }
     }
   }, [mediaStream, hasVideoTrack]);
@@ -93,13 +102,22 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
     if (!isFullscreen) return;
     const fsVideo = fullscreenVideoRef.current;
     if (fsVideo) {
+      fsVideo.muted = true;
+      fsVideo.defaultMuted = true;
+      fsVideo.playsInline = true;
+      fsVideo.setAttribute('playsinline', '');
+      fsVideo.setAttribute('muted', '');
+
       if (mediaStream) {
         if (fsVideo.srcObject !== mediaStream) {
           fsVideo.srcObject = mediaStream;
         }
-        void fsVideo.play().catch(() => undefined);
-      } else {
-        fsVideo.srcObject = null;
+        const playPromise = fsVideo.play();
+        if (playPromise !== undefined) {
+          playPromise.catch((err) => {
+            console.warn('[ParticipantTile] Fullscreen play:', err);
+          });
+        }
       }
     }
   }, [isFullscreen, mediaStream, hasVideoTrack]);

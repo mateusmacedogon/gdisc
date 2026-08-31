@@ -1,7 +1,7 @@
 /**
  * GDisC WebRTC Realtime Mesh Engine
  * Production-ready P2P WebRTC engine with Immutable MediaStream Architecture,
- * Perfect Negotiation, resilient browser display capture, and dynamic transceiver direction.
+ * Perfect Negotiation, resilient window/tab capture, and stable video pipeline.
  */
 
 import { wsClient } from './ws.js';
@@ -160,7 +160,7 @@ class WebRTCManager {
   }
 
   /**
-   * Starts screen capture on Desktop or Web browser
+   * Starts screen capture on Desktop (Electron) or Web browser (Window, Tab, Full Screen)
    */
   public async startScreenShare(options?: ScreenShareOptions): Promise<MediaStream | null> {
     if (!platformCapabilities.screenShare) {
@@ -168,16 +168,6 @@ class WebRTCManager {
     }
     try {
       const fps = options?.fps ?? 30;
-      let width = 1920;
-      let height = 1080;
-
-      if (options?.resolution === '720p') {
-        width = 1280;
-        height = 720;
-      } else if (options?.resolution === 'original') {
-        width = 3840;
-        height = 2160;
-      }
 
       this.screenStream = null;
 
@@ -196,8 +186,8 @@ class WebRTCManager {
               mandatory: {
                 chromeMediaSource: 'desktop',
                 chromeMediaSourceId: options.sourceId,
-                maxWidth: width,
-                maxHeight: height,
+                maxWidth: options?.resolution === '720p' ? 1280 : options?.resolution === '1080p' ? 1920 : 3840,
+                maxHeight: options?.resolution === '720p' ? 720 : options?.resolution === '1080p' ? 1080 : 2160,
                 maxFrameRate: fps,
               },
             },
@@ -210,13 +200,16 @@ class WebRTCManager {
 
       // Web Browser standard getDisplayMedia capture with resilient fallback
       if (!this.screenStream) {
-        const videoConstraints: MediaTrackConstraints = {
-          width: { ideal: width },
-          height: { ideal: height },
-          frameRate: { ideal: fps },
-        };
-
         const tryGetDisplayMedia = async (withSysAudio: boolean): Promise<MediaStream> => {
+          const videoConstraints: MediaTrackConstraints = {
+            frameRate: { ideal: fps, max: fps },
+            ...(options?.resolution === '720p'
+              ? { width: { ideal: 1280 }, height: { ideal: 720 } }
+              : options?.resolution === '1080p'
+              ? { width: { ideal: 1920 }, height: { ideal: 1080 } }
+              : {}),
+          };
+
           return await navigator.mediaDevices.getDisplayMedia({
             video: videoConstraints,
             audio: withSysAudio
@@ -232,7 +225,7 @@ class WebRTCManager {
         try {
           this.screenStream = await tryGetDisplayMedia(Boolean(options?.withAudio));
         } catch (displayErr: any) {
-          // If browser rejects because system audio is unsupported on chosen display/window, retry with video only
+          // If browser rejects because system audio is unsupported on chosen window/tab, retry with video only
           if (options?.withAudio && displayErr?.name !== 'NotAllowedError') {
             console.warn('[WebRTC] getDisplayMedia with audio failed, retrying with video only:', displayErr);
             this.screenStream = await tryGetDisplayMedia(false);
@@ -244,7 +237,7 @@ class WebRTCManager {
 
       const videoTrack = this.screenStream.getVideoTracks()[0];
       if (videoTrack) {
-        videoTrack.contentHint = fps >= 60 ? 'motion' : 'detail';
+        videoTrack.contentHint = 'motion';
         videoTrack.onended = () => {
           void this.stopScreenShare().finally(() => this.onScreenShareEnded?.());
         };
@@ -499,13 +492,6 @@ class WebRTCManager {
         this.remotePeerTracks.set(targetUserId, peerTracks);
       }
 
-      // If an existing track of the same kind is present, remove it in favor of the new track
-      for (const [id, t] of peerTracks.entries()) {
-        if (t.kind === event.track.kind && id !== event.track.id) {
-          peerTracks.delete(id);
-        }
-      }
-
       peerTracks.set(event.track.id, event.track);
 
       const rebuildFreshStream = () => {
@@ -513,7 +499,6 @@ class WebRTCManager {
         if (!currentTracks) return;
 
         const liveTracks = [...currentTracks.values()].filter((t) => t.readyState === 'live');
-        // Generate a new immutable MediaStream object so React catches the reference change instantly
         const freshStream = new MediaStream(liveTracks);
         this.remoteStreams.set(targetUserId, freshStream);
         this.notifyRemoteStreamsChanged();
@@ -625,7 +610,7 @@ class WebRTCManager {
       if (isScreen) {
         params.encodings[0].maxBitrate = 3_500_000;
         params.encodings[0].networkPriority = 'high';
-        params.degradationPreference = 'maintain-resolution';
+        params.degradationPreference = 'maintain-framerate';
       } else {
         params.encodings[0].maxBitrate = 1_500_000;
         params.encodings[0].networkPriority = 'medium';
