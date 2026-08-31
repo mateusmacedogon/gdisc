@@ -8,6 +8,9 @@ const __dirname = path.dirname(__filename);
 
 // Enable Hardware Acceleration for WebRTC audio/video and screen capture
 app.commandLine.appendSwitch('enable-features', 'WebRTCPeerConnectionWithContext,HardwareMediaKeyHandling');
+// Voice calls must keep playing even when Chromium's web autoplay heuristic
+// has not yet observed a click in the current renderer session.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -116,7 +119,10 @@ function setupMediaHandlers() {
           const match = selectedSourceId
             ? sources.find((s) => s.id === selectedSourceId) || sources[0]
             : sources[0];
-          callback({ video: match });
+          callback({
+            video: match,
+            ...(request.audioRequested ? { audio: 'loopback' as const } : {}),
+          });
         } else {
           callback({});
         }
@@ -151,6 +157,9 @@ function createMainWindow(): BrowserWindow {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      // Keep WebRTC timers, audio and ICE recovery active while the desktop
+      // window is minimized to the tray or covered by another application.
+      backgroundThrottling: false,
     },
   });
 

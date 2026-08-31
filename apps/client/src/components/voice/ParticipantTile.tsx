@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Avatar } from '../common/Avatar.js';
 import { Maximize2, MicOff, Minimize2, Video, Monitor, Volume2, X } from 'lucide-react';
@@ -28,6 +28,7 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
   const usesNativeFullscreenRef = useRef(false);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isAudioBlocked, setIsAudioBlocked] = useState(false);
   const [, setTrackVersion] = useState(0);
 
   // Active listener on MediaStream tracks to dynamically trigger updates on track state changes
@@ -122,26 +123,70 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
     }
   }, [isFullscreen, mediaStream, hasVideoTrack]);
 
-  // Audio output handler
-  useEffect(() => {
+  const playRemoteAudio = useCallback(async () => {
     const audio = audioRef.current;
-    if (audio) {
-      if (mediaStream && !isLocal && !muteAudio) {
-        if (audio.srcObject !== mediaStream) {
-          audio.srcObject = mediaStream;
+    if (!audio || !mediaStream || isLocal || !hasAudioTrack) {
+      setIsAudioBlocked(false);
+      return;
+    }
+
+    audio.muted = muteAudio;
+    audio.defaultMuted = false;
+    audio.volume = 1;
+    if (audio.srcObject !== mediaStream) audio.srcObject = mediaStream;
+
+    const sinkAudio = audio as HTMLAudioElement & {
+      setSinkId?: (deviceId: string) => Promise<void>;
+    };
+    if (sinkAudio.setSinkId) {
+      try {
+        await sinkAudio.setSinkId(audioOutputDeviceId || 'default');
+      } catch (error) {
+        console.warn('[ParticipantTile] Audio output device unavailable, using default:', error);
+        if (audioOutputDeviceId) {
+          await sinkAudio.setSinkId('default').catch(() => undefined);
         }
-        const sinkAudio = audio as HTMLAudioElement & {
-          setSinkId?: (deviceId: string) => Promise<void>;
-        };
-        if (sinkAudio.setSinkId) {
-          void sinkAudio.setSinkId(audioOutputDeviceId || 'default').catch(() => undefined);
-        }
-        void audio.play().catch(() => undefined);
-      } else {
-        audio.srcObject = null;
       }
     }
-  }, [audioOutputDeviceId, mediaStream, hasAudioTrack, isLocal, muteAudio]);
+
+    try {
+      await audio.play();
+      setIsAudioBlocked(false);
+    } catch (error) {
+      if (!muteAudio) {
+        console.warn('[ParticipantTile] Remote audio playback was blocked:', error);
+        setIsAudioBlocked(true);
+      }
+    }
+  }, [audioOutputDeviceId, hasAudioTrack, isLocal, mediaStream, muteAudio]);
+
+  // Audio output handler. Browsers may block autoplay until the first user
+  // interaction, so retry on media readiness and on the next click/key press.
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !mediaStream || isLocal || !hasAudioTrack) {
+      if (audio) audio.srcObject = null;
+      setIsAudioBlocked(false);
+      return;
+    }
+
+    audio.srcObject = mediaStream;
+    audio.muted = muteAudio;
+    const retryPlayback = () => void playRemoteAudio();
+    audio.addEventListener('canplay', retryPlayback);
+    audio.addEventListener('loadedmetadata', retryPlayback);
+    document.addEventListener('pointerdown', retryPlayback, { once: true });
+    document.addEventListener('keydown', retryPlayback, { once: true });
+    void playRemoteAudio();
+
+    return () => {
+      audio.removeEventListener('canplay', retryPlayback);
+      audio.removeEventListener('loadedmetadata', retryPlayback);
+      document.removeEventListener('pointerdown', retryPlayback);
+      document.removeEventListener('keydown', retryPlayback);
+      if (audio.srcObject === mediaStream) audio.srcObject = null;
+    };
+  }, [hasAudioTrack, isLocal, mediaStream, muteAudio, playRemoteAudio]);
 
   // Escape key closes fullscreen
   useEffect(() => {
@@ -206,11 +251,23 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
             ref={audioRef}
             autoPlay
             muted={muteAudio}
-            onLoadedMetadata={(e) => {
-              void e.currentTarget.play().catch(() => undefined);
-            }}
             className="hidden"
           />
+        )}
+
+        {isAudioBlocked && !isLocal && !muteAudio && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              void playRemoteAudio();
+            }}
+            className="absolute bottom-14 left-1/2 z-30 flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-xl border border-gdisc-brand-primary/50 bg-gdisc-brand-primary px-4 py-2 text-xs font-bold text-white shadow-xl transition-transform hover:scale-105 active:scale-95"
+            aria-label={`Ativar áudio de ${participant.user.displayName}`}
+          >
+            <Volume2 className="h-4 w-4" />
+            Ativar áudio
+          </button>
         )}
 
         {/* Video Element is PERMANENTLY mounted in the DOM to avoid teardown/blackouts */}

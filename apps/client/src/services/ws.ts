@@ -549,8 +549,11 @@ class RealtimeClient {
       try {
         await this.channelReady.get(channel);
         const elapsed = Date.now() - (this.lastPresenceTrackAt.get(channel) ?? 0);
-        if (elapsed < 300) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 300 - elapsed));
+        // Supabase Presence has a deliberately low per-client rate limit.
+        // State updates are serialized and capped at one per second; speaking
+        // activity continues to use Broadcast and remains immediate.
+        if (elapsed < 1_000) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 1_000 - elapsed));
         }
         const status = await channel.track(payload);
         this.lastPresenceTrackAt.set(channel, Date.now());
