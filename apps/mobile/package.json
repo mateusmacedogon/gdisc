@@ -1,6 +1,6 @@
 {
   "name": "@gdisc/mobile",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "GDisC - Aplicativo Mobile para Android",
   "private": true,
   "scripts": {

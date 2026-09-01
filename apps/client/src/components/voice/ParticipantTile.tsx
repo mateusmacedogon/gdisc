@@ -13,6 +13,55 @@ interface ParticipantTileProps {
   audioOutputDeviceId?: string;
 }
 
+const isExpectedPlaybackInterruption = (error: unknown): boolean =>
+  Boolean(error && typeof error === 'object' && 'name' in error && error.name === 'AbortError');
+
+const attachMutedVideo = (
+  video: HTMLVideoElement,
+  mediaStream: MediaStream | null | undefined,
+  warningLabel: string,
+): (() => void) => {
+  let active = true;
+  video.muted = true;
+  video.defaultMuted = true;
+  video.playsInline = true;
+  video.setAttribute('playsinline', '');
+  video.setAttribute('muted', '');
+
+  if (!mediaStream) {
+    video.pause();
+    video.srcObject = null;
+    return () => { active = false; };
+  }
+
+  if (video.srcObject !== mediaStream) video.srcObject = mediaStream;
+
+  const play = () => {
+    if (!active || !video.isConnected || video.srcObject !== mediaStream) return;
+    void video.play().catch((error) => {
+      if (
+        active
+        && video.isConnected
+        && video.srcObject === mediaStream
+        && !isExpectedPlaybackInterruption(error)
+      ) {
+        console.warn(`[ParticipantTile] ${warningLabel}:`, error);
+      }
+    });
+  };
+
+  if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+    play();
+  } else {
+    video.addEventListener('loadedmetadata', play, { once: true });
+  }
+
+  return () => {
+    active = false;
+    video.removeEventListener('loadedmetadata', play);
+  };
+};
+
 export const ParticipantTile: React.FC<ParticipantTileProps> = ({
   participant,
   isLocal = false,
@@ -26,6 +75,7 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
   const fullscreenVideoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const usesNativeFullscreenRef = useRef(false);
+  const audioPlaybackRequestRef = useRef(0);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isAudioBlocked, setIsAudioBlocked] = useState(false);
@@ -77,51 +127,17 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
   // Sync video stream to regular tile with unconditional native DOM attributes for web autoplay
   useEffect(() => {
     const video = videoRef.current;
-    if (video) {
-      video.muted = true;
-      video.defaultMuted = true;
-      video.playsInline = true;
-      video.setAttribute('playsinline', '');
-      video.setAttribute('muted', '');
-
-      if (mediaStream) {
-        if (video.srcObject !== mediaStream) {
-          video.srcObject = mediaStream;
-        }
-        const playPromise = video.play();
-        if (playPromise !== undefined) {
-          playPromise.catch((err) => {
-            console.warn('[ParticipantTile] Video play:', err);
-          });
-        }
-      }
-    }
-  }, [mediaStream, hasVideoTrack]);
+    if (!video) return;
+    return attachMutedVideo(video, mediaStream, 'Video play');
+  }, [mediaStream]);
 
   // Sync video stream to fullscreen portal
   useEffect(() => {
     if (!isFullscreen) return;
     const fsVideo = fullscreenVideoRef.current;
-    if (fsVideo) {
-      fsVideo.muted = true;
-      fsVideo.defaultMuted = true;
-      fsVideo.playsInline = true;
-      fsVideo.setAttribute('playsinline', '');
-      fsVideo.setAttribute('muted', '');
-
-      if (mediaStream) {
-        if (fsVideo.srcObject !== mediaStream) {
-          fsVideo.srcObject = mediaStream;
-        }
-        const playPromise = fsVideo.play();
-        if (playPromise !== undefined) {
-          playPromise.catch((err) => {
-            console.warn('[ParticipantTile] Fullscreen play:', err);
-          });
-        }
-      }
-    }
-  }, [isFullscreen, mediaStream, hasVideoTrack]);
+    if (!fsVideo) return;
+    return attachMutedVideo(fsVideo, mediaStream, 'Fullscreen play');
+  }, [isFullscreen, mediaStream]);
 
   const playRemoteAudio = useCallback(async () => {
     const audio = audioRef.current;
@@ -129,6 +145,14 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
       setIsAudioBlocked(false);
       return;
     }
+
+    const playbackRequest = ++audioPlaybackRequestRef.current;
+    const isCurrentRequest = () => (
+      playbackRequest === audioPlaybackRequestRef.current
+      && audioRef.current === audio
+      && audio.isConnected
+      && audio.srcObject === mediaStream
+    );
 
     audio.muted = muteAudio;
     audio.defaultMuted = false;
@@ -149,10 +173,13 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
       }
     }
 
+    if (!isCurrentRequest()) return;
+
     try {
       await audio.play();
-      setIsAudioBlocked(false);
+      if (isCurrentRequest()) setIsAudioBlocked(false);
     } catch (error) {
+      if (!isCurrentRequest() || isExpectedPlaybackInterruption(error)) return;
       if (!muteAudio) {
         console.warn('[ParticipantTile] Remote audio playback was blocked:', error);
         setIsAudioBlocked(true);
@@ -165,28 +192,41 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !mediaStream || isLocal || !hasAudioTrack) {
-      if (audio) audio.srcObject = null;
+      audioPlaybackRequestRef.current += 1;
+      if (audio) {
+        audio.pause();
+        audio.srcObject = null;
+      }
       setIsAudioBlocked(false);
       return;
     }
 
-    audio.srcObject = mediaStream;
+    if (audio.srcObject !== mediaStream) audio.srcObject = mediaStream;
     audio.muted = muteAudio;
     const retryPlayback = () => void playRemoteAudio();
-    audio.addEventListener('canplay', retryPlayback);
-    audio.addEventListener('loadedmetadata', retryPlayback);
+    audio.addEventListener('canplay', retryPlayback, { once: true });
+    audio.addEventListener('loadedmetadata', retryPlayback, { once: true });
     document.addEventListener('pointerdown', retryPlayback, { once: true });
     document.addEventListener('keydown', retryPlayback, { once: true });
     void playRemoteAudio();
 
     return () => {
+      audioPlaybackRequestRef.current += 1;
       audio.removeEventListener('canplay', retryPlayback);
       audio.removeEventListener('loadedmetadata', retryPlayback);
       document.removeEventListener('pointerdown', retryPlayback);
       document.removeEventListener('keydown', retryPlayback);
-      if (audio.srcObject === mediaStream) audio.srcObject = null;
     };
   }, [hasAudioTrack, isLocal, mediaStream, muteAudio, playRemoteAudio]);
+
+  useEffect(() => () => {
+    audioPlaybackRequestRef.current += 1;
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.srcObject = null;
+    }
+  }, []);
 
   // Escape key closes fullscreen
   useEffect(() => {
@@ -276,9 +316,6 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
           autoPlay
           playsInline
           muted
-          onLoadedMetadata={(e) => {
-            void e.currentTarget.play().catch(() => undefined);
-          }}
           className={`w-full h-full ${
             participant.selfScreen ? 'object-contain bg-black' : 'object-cover'
           } rounded-2xl ${hasVideoTrack ? 'block' : 'hidden'}`}
@@ -372,9 +409,6 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
               autoPlay
               playsInline
               muted
-              onLoadedMetadata={(e) => {
-                void e.currentTarget.play().catch(() => undefined);
-              }}
               className="w-full h-full object-contain"
             />
 

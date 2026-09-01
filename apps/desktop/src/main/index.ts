@@ -164,7 +164,7 @@ function createMainWindow(): BrowserWindow {
   });
 
   // Set desktop userAgent tag
-  win.webContents.setUserAgent(win.webContents.getUserAgent() + ' GDisC-Desktop/1.0.5');
+  win.webContents.setUserAgent(win.webContents.getUserAgent() + ' GDisC-Desktop/1.0.6');
 
   // Window state notification handlers
   win.on('maximize', () => {

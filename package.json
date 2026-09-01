@@ -1,6 +1,6 @@
 {
   "name": "gdisc-monorepo",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "private": true,
   "description": "GDisC - Ultra-fast, lightweight real-time communication platform",
   "workspaces": [
@@ -19,7 +19,7 @@
     "build:desktop": "npm run build:client && npm run build --workspace=@gdisc/desktop && electron-builder --project apps/desktop",
     "build:windows": "npm run build:desktop",
     "build:android": "npm run build:client && node scripts/generate-android-icons.mjs && cd apps/mobile && npx cap sync android",
-    "build:apk": "npm run build:android && cd apps/mobile/android && .\\gradlew.bat assembleDebug --no-daemon && powershell -Command \"if (!(Test-Path ../../../dist-android)) { New-Item -ItemType Directory -Path ../../../dist-android | Out-Null }; Copy-Item -Path app/build/outputs/apk/debug/app-debug.apk -Destination ../../../dist-android/GDisC-1.0.5-debug.apk -Force\"",
+    "build:apk": "npm run build:android && cd apps/mobile/android && .\\gradlew.bat assembleDebug --no-daemon && powershell -Command \"if (!(Test-Path ../../../dist-android)) { New-Item -ItemType Directory -Path ../../../dist-android | Out-Null }; Copy-Item -Path app/build/outputs/apk/debug/app-debug.apk -Destination ../../../dist-android/GDisC-1.0.6-debug.apk -Force\"",
     "open:android": "cd apps/mobile && npx cap open android",
     "test": "npm run test --workspaces --if-present",
     "db:generate": "npm run db:generate --workspace=@gdisc/server",

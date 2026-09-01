@@ -860,7 +860,8 @@ class WebRTCManager {
       console.warn('[WebRTC] ICE candidate error:', event.url, event.errorCode, event.errorText);
     };
 
-    // Remote Track event with Immutable MediaStream generation
+    // Keep one MediaStream object per peer. Replacing it on every mute/unmute
+    // forces media elements to reload and interrupts pending play() calls.
     pc.ontrack = (event) => {
       let peerTracks = this.remotePeerTracks.get(targetUserId);
       if (!peerTracks) {
@@ -869,29 +870,26 @@ class WebRTCManager {
       }
 
       peerTracks.set(event.track.id, event.track);
-
-      const rebuildFreshStream = () => {
-        const currentTracks = this.remotePeerTracks.get(targetUserId);
-        if (!currentTracks) return;
-
-        const liveTracks = [...currentTracks.values()].filter((t) => t.readyState === 'live');
-        const freshStream = new MediaStream(liveTracks);
-        this.remoteStreams.set(targetUserId, freshStream);
-        this.notifyRemoteStreamsChanged();
-      };
+      let remoteStream = this.remoteStreams.get(targetUserId);
+      if (!remoteStream) {
+        remoteStream = new MediaStream();
+        this.remoteStreams.set(targetUserId, remoteStream);
+      }
+      if (!remoteStream.getTracks().some((track) => track.id === event.track.id)) {
+        remoteStream.addTrack(event.track);
+      }
 
       event.track.onended = () => {
         const tracks = this.remotePeerTracks.get(targetUserId);
-        if (tracks) {
-          tracks.delete(event.track.id);
-          rebuildFreshStream();
-        }
+        tracks?.delete(event.track.id);
+        this.remoteStreams.get(targetUserId)?.removeTrack(event.track);
+        this.notifyRemoteStreamsChanged();
       };
 
-      event.track.onmute = () => rebuildFreshStream();
-      event.track.onunmute = () => rebuildFreshStream();
+      event.track.onmute = () => this.notifyRemoteStreamsChanged();
+      event.track.onunmute = () => this.notifyRemoteStreamsChanged();
 
-      rebuildFreshStream();
+      this.notifyRemoteStreamsChanged();
     };
 
     // Offers requested while another offer/answer exchange is underway are
