@@ -57,6 +57,9 @@ function friendlyMessage(error: unknown, fallback = 'Não foi possível concluir
   if (message.includes('user already registered')) return 'Este e-mail já possui uma conta.';
   if (message.includes('password should be')) return 'A senha deve ter pelo menos 8 caracteres, com letras e números.';
   if (message.includes('duplicate key') && message.includes('username')) return 'Este nome de usuário já está em uso.';
+  if (message.includes('servers_icon_url_length_check')) {
+    return 'A URL do ícone é longa demais. Envie a imagem pelo seletor de arquivo.';
+  }
   if (message.includes('row-level security') || message.includes('permission denied')) {
     return 'Você não tem permissão para realizar esta ação.';
   }

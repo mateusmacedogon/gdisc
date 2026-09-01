@@ -90,6 +90,7 @@ export const CreateServerModal: React.FC = () => {
           <input
             type="url"
             value={iconUrl}
+            maxLength={8192}
             onChange={(e) => setIconUrl(e.target.value)}
             placeholder="https://exemplo.com/icone.png"
             className="w-full px-3.5 py-2.5 bg-gdisc-bg-secondary border border-gdisc-bg-hover rounded-xl text-sm text-gdisc-text-primary focus:outline-none focus:border-gdisc-brand-primary transition-colors"

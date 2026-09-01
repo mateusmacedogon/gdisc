@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Modal } from '../common/Modal.js';
 import { useUIStore } from '../../stores/useUIStore.js';
 import { useServerStore } from '../../stores/useServerStore.js';
 import { useChannelStore } from '../../stores/useChannelStore.js';
 import { useAuthStore } from '../../stores/useAuthStore.js';
 import { api } from '../../services/api.js';
+import { uploadServerIcon, validateServerIconFile } from '../../services/serverIcon.js';
 import {
   PERMISSION_DEFINITIONS,
   PermissionFlags,
@@ -20,6 +21,8 @@ import {
   Plus,
   Check,
   AlertTriangle,
+  ImagePlus,
+  X,
 } from 'lucide-react';
 
 export const ServerSettingsModal: React.FC = () => {
@@ -34,6 +37,8 @@ export const ServerSettingsModal: React.FC = () => {
   const [name, setName] = useState(activeServer?.name || '');
   const [description, setDescription] = useState(activeServer?.description || '');
   const [iconUrl, setIconUrl] = useState(activeServer?.iconUrl || '');
+  const [iconFile, setIconFile] = useState<File | null>(null);
+  const [iconPreview, setIconPreview] = useState(activeServer?.iconUrl || '');
   const [isSaving, setIsSaving] = useState(false);
 
   // Role Form
@@ -42,19 +47,52 @@ export const ServerSettingsModal: React.FC = () => {
   const [selectedRole, setSelectedRole] = useState<RoleSummary | null>(null);
 
   const isOpen = activeModal === 'server_settings';
+  useEffect(() => () => {
+    if (iconPreview.startsWith('blob:')) URL.revokeObjectURL(iconPreview);
+  }, [iconPreview]);
+
+  useEffect(() => {
+    if (!isOpen || !activeServer) return;
+    setName(activeServer.name);
+    setDescription(activeServer.description || '');
+    setIconUrl(activeServer.iconUrl || '');
+    setIconPreview(activeServer.iconUrl || '');
+    setIconFile(null);
+  }, [isOpen, activeServer?.id]);
+
   if (!isOpen || !activeServer) return null;
 
   const isOwner = user?.id === activeServer.ownerId;
+
+  const handleIconFile = (file?: File) => {
+    if (!file) return;
+    try {
+      validateServerIconFile(file);
+      setIconFile(file);
+      setIconUrl('');
+      setIconPreview(URL.createObjectURL(file));
+    } catch (err: any) {
+      addToast(err.message || 'Imagem inválida.', 'error');
+    }
+  };
 
   const handleSaveOverview = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       setIsSaving(true);
+      let nextIconUrl = iconUrl.trim();
+      if (nextIconUrl.length > 8192) {
+        throw new Error('A URL é longa demais. Selecione o arquivo da imagem para enviá-lo diretamente.');
+      }
+      if (iconFile) nextIconUrl = await uploadServerIcon(activeServer.id, iconFile);
       await updateServer(activeServer.id, {
         name: name.trim(),
-        description: description.trim() || undefined,
-        iconUrl: iconUrl.trim() || undefined,
+        description: description.trim(),
+        iconUrl: nextIconUrl,
       });
+      setIconUrl(nextIconUrl);
+      setIconPreview(nextIconUrl);
+      setIconFile(null);
       addToast('Configurações do servidor salvas!', 'success');
     } catch (err: any) {
       addToast(err.message || 'Erro ao salvar', 'error');
@@ -201,12 +239,56 @@ export const ServerSettingsModal: React.FC = () => {
 
               <div>
                 <label className="block text-xs font-semibold text-gdisc-text-secondary uppercase tracking-wider mb-1.5">
-                  URL do Ícone
+                  Ícone do Servidor
                 </label>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-3">
+                  <div className="w-20 h-20 rounded-2xl overflow-hidden bg-gdisc-bg-secondary border border-gdisc-bg-hover flex items-center justify-center shrink-0">
+                    {iconPreview ? (
+                      <img src={iconPreview} alt="Prévia do ícone" className="w-full h-full object-cover" />
+                    ) : (
+                      <ImagePlus className="w-7 h-7 text-gdisc-text-muted" />
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <label className="min-h-11 px-4 py-2.5 inline-flex items-center justify-center gap-2 rounded-xl bg-gdisc-brand-primary hover:bg-gdisc-brand-secondary text-white text-sm font-semibold cursor-pointer transition-colors">
+                      <ImagePlus className="w-4 h-4" />
+                      Escolher imagem
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        className="sr-only"
+                        onChange={(event) => handleIconFile(event.target.files?.[0])}
+                      />
+                    </label>
+                    {(iconPreview || iconUrl) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIconFile(null);
+                          setIconUrl('');
+                          setIconPreview('');
+                        }}
+                        className="min-h-11 px-3 py-2.5 inline-flex items-center justify-center gap-2 rounded-xl bg-gdisc-bg-secondary hover:bg-gdisc-danger/10 text-gdisc-text-secondary hover:text-gdisc-danger text-sm font-semibold transition-colors"
+                      >
+                        <X className="w-4 h-4" />
+                        Remover
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <p className="text-xs text-gdisc-text-muted mb-2">
+                  PNG, JPG ou WebP de até 10 MB. A imagem será otimizada automaticamente.
+                </p>
                 <input
                   type="url"
                   value={iconUrl}
-                  onChange={(e) => setIconUrl(e.target.value)}
+                  maxLength={8192}
+                  onChange={(e) => {
+                    setIconUrl(e.target.value);
+                    setIconFile(null);
+                    setIconPreview(e.target.value);
+                  }}
+                  placeholder="Ou cole uma URL HTTPS"
                   className="w-full px-3.5 py-2.5 bg-gdisc-bg-secondary border border-gdisc-bg-hover rounded-xl text-sm text-gdisc-text-primary focus:outline-none focus:border-gdisc-brand-primary"
                 />
               </div>
