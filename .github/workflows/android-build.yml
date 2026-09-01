@@ -64,12 +64,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gdisc-android-apk
-          path: dist-android/GDisC-1.0.4-debug.apk
+          path: dist-android/GDisC-1.0.5-debug.apk
 
       - name: Publish to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist-android/GDisC-1.0.4-debug.apk
+          files: dist-android/GDisC-1.0.5-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

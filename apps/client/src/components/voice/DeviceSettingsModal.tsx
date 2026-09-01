@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Modal } from '../common/Modal.js';
 import { useUIStore } from '../../stores/useUIStore.js';
 import { useVoiceStore } from '../../stores/useVoiceStore.js';
-import { Mic, Video, Volume2 } from 'lucide-react';
+import { Mic, Video, Volume2, Waves } from 'lucide-react';
 import { platformCapabilities } from '../../utils/platform.js';
 
 export const DeviceSettingsModal: React.FC = () => {
@@ -14,6 +14,8 @@ export const DeviceSettingsModal: React.FC = () => {
     setAudioInput,
     setAudioOutput,
     setVideoInput,
+    isNoiseSuppressionEnabled,
+    setNoiseSuppression,
     localStream,
   } = useVoiceStore();
 
@@ -21,10 +23,27 @@ export const DeviceSettingsModal: React.FC = () => {
   const [audioOutputDevices, setAudioOutputDevices] = useState<MediaDeviceInfo[]>([]);
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
   const [micVolume, setMicVolume] = useState(0);
-  const [switchingDevice, setSwitchingDevice] = useState<'audio' | 'output' | 'video' | null>(null);
+  const [switchingDevice, setSwitchingDevice] = useState<'audio' | 'output' | 'video' | 'noise' | null>(null);
 
   const isOpen = activeModal === 'device_settings';
   const animationFrameRef = useRef<number | null>(null);
+  const noiseSuppressionSupported = typeof navigator !== 'undefined'
+    && navigator.mediaDevices?.getSupportedConstraints?.().noiseSuppression === true;
+
+  const changeNoiseSuppression = async () => {
+    setSwitchingDevice('noise');
+    try {
+      await setNoiseSuppression(!isNoiseSuppressionEnabled);
+      addToast(
+        !isNoiseSuppressionEnabled ? 'Redução de ruído ativada.' : 'Redução de ruído desativada.',
+        'success',
+      );
+    } catch (error) {
+      addToast(error instanceof Error ? error.message : 'Não foi possível alterar a redução de ruído.', 'error');
+    } finally {
+      setSwitchingDevice(null);
+    }
+  };
 
   const changeAudioInput = async (deviceId: string) => {
     setSwitchingDevice('audio');
@@ -167,6 +186,39 @@ export const DeviceSettingsModal: React.FC = () => {
               />
             </div>
           </div>
+
+          <button
+            type="button"
+            role="switch"
+            aria-checked={isNoiseSuppressionEnabled}
+            onClick={() => void changeNoiseSuppression()}
+            disabled={switchingDevice !== null || !noiseSuppressionSupported}
+            className="mt-4 flex min-h-11 w-full items-center gap-3 rounded-xl border border-gdisc-bg-hover bg-gdisc-bg-secondary px-3.5 py-3 text-left transition-colors hover:border-gdisc-brand-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Waves className="h-5 w-5 shrink-0 text-gdisc-brand-secondary" aria-hidden="true" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-semibold text-gdisc-text-primary">Redução de ruído</span>
+              <span className="block text-xs leading-relaxed text-gdisc-text-muted">
+                {noiseSuppressionSupported
+                  ? 'Filtra ventilador, teclado e ruídos constantes. Você pode desligar quando quiser.'
+                  : 'Este navegador ou dispositivo não oferece redução de ruído nativa.'}
+              </span>
+            </span>
+            <span
+              aria-hidden="true"
+              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                isNoiseSuppressionEnabled && noiseSuppressionSupported
+                  ? 'bg-gdisc-brand-primary'
+                  : 'bg-gdisc-bg-hover'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
+                  isNoiseSuppressionEnabled && noiseSuppressionSupported ? 'translate-x-5' : 'translate-x-0.5'
+                }`}
+              />
+            </span>
+          </button>
         </div>
 
         {/* Speaker / headphones selector (Chromium desktop only). */}

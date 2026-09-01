@@ -10,6 +10,7 @@ import {
   getRtcNegotiationRetryDelay,
   matchesRtcConnection,
   shouldInitiateRtcConnection,
+  shouldInitiateRtcConnectionForJoin,
   type RTCSignalPayload,
 } from '@gdisc/shared';
 import type { VoiceState } from '@gdisc/shared';
@@ -229,7 +230,8 @@ class WebRTCManager {
     audio = true,
     video = false,
     audioDeviceId?: string,
-    videoDeviceId?: string
+    videoDeviceId?: string,
+    noiseSuppression = true,
   ): Promise<MediaStream> {
     if (!platformCapabilities.camera) {
       throw new Error('Este dispositivo não oferece acesso a microfone ou câmera neste aplicativo.');
@@ -239,7 +241,7 @@ class WebRTCManager {
       audio: audio
         ? {
             echoCancellation: true,
-            noiseSuppression: true,
+            noiseSuppression,
             autoGainControl: true,
             ...(audioDeviceId ? { deviceId: { exact: audioDeviceId } } : {}),
           }
@@ -262,7 +264,7 @@ class WebRTCManager {
       if (!audio) throw this.createMediaError(err, 'Não foi possível acessar a câmera.');
       try {
         nextStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          audio: { echoCancellation: true, noiseSuppression, autoGainControl: true },
           video: false,
         });
       } catch (fallbackErr) {
@@ -280,7 +282,7 @@ class WebRTCManager {
     return nextStream;
   }
 
-  public async switchAudioInput(deviceId?: string): Promise<MediaStream> {
+  public async switchAudioInput(deviceId?: string, noiseSuppression = true): Promise<MediaStream> {
     if (!platformCapabilities.camera) {
       throw new Error('A seleção de microfone não é suportada neste dispositivo.');
     }
@@ -290,7 +292,7 @@ class WebRTCManager {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
-          noiseSuppression: true,
+          noiseSuppression,
           autoGainControl: true,
           ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
         },
@@ -303,12 +305,11 @@ class WebRTCManager {
     const nextAudioTrack = stream.getAudioTracks()[0];
     if (!nextAudioTrack) throw new Error('O microfone selecionado não forneceu áudio.');
     nextAudioTrack.contentHint = 'speech';
-    if (!this.localStream) this.localStream = new MediaStream();
-    this.localStream.getAudioTracks().forEach((track) => {
-      track.stop();
-      this.localStream?.removeTrack(track);
-    });
-    this.localStream.addTrack(nextAudioTrack);
+    const previousStream = this.localStream;
+    previousStream?.getAudioTracks().forEach((track) => track.stop());
+    const liveVideoTracks = previousStream?.getVideoTracks()
+      .filter((track) => track.readyState === 'live') ?? [];
+    this.localStream = new MediaStream([...liveVideoTracks, nextAudioTrack]);
     await this.renegotiateAllPeers();
     return this.localStream;
   }
@@ -536,7 +537,10 @@ class WebRTCManager {
     await Promise.allSettled(tasks);
   }
 
-  public async connectToPeers(peerUserIds: string[]) {
+  public async connectToPeers(
+    peerUserIds: string[],
+    initialOffererPeerIds?: ReadonlySet<string>,
+  ) {
     if (!this.localUserId) return;
     for (const peerId of [...new Set(peerUserIds)].sort()) {
       if (!peerId || peerId === this.localUserId) continue;
@@ -544,20 +548,38 @@ class WebRTCManager {
       const existing = this.peerConnections.get(peerId);
       if (existing && existing.connectionState !== 'closed' && existing.connectionState !== 'failed') continue;
 
-      if (this.shouldInitiateFor(peerId)) {
+      const shouldCreateOffer = initialOffererPeerIds
+        ? initialOffererPeerIds.has(peerId)
+        : this.shouldInitiateFor(peerId);
+      if (shouldCreateOffer) {
         await this.createPeerConnection(peerId, true);
       }
     }
     this.emitConnectionSnapshot();
   }
 
-  public async syncPeers(peerUserIds: string[]) {
-    const expected = new Set(peerUserIds.filter((peerId) => Boolean(peerId) && peerId !== this.localUserId));
+  public async syncPeers(peers: VoiceState[]) {
+    const localState = peers.find((peer) => peer.userId === this.localUserId);
+    const remotePeers = peers.filter((peer) => Boolean(peer.userId) && peer.userId !== this.localUserId);
+    const expected = new Set(remotePeers.map((peer) => peer.userId));
+    const initialOffererPeerIds = new Set(
+      remotePeers
+        .filter((peer) => Boolean(
+          this.localUserId
+          && shouldInitiateRtcConnectionForJoin(
+            this.localUserId,
+            localState?.joinedAt,
+            peer.userId,
+            peer.joinedAt,
+          )
+        ))
+        .map((peer) => peer.userId),
+    );
     this.expectedPeerIds = expected;
     for (const peerId of this.peerConnections.keys()) {
       if (!expected.has(peerId)) this.removePeer(peerId, true);
     }
-    await this.connectToPeers([...expected]);
+    await this.connectToPeers([...expected], initialOffererPeerIds);
     this.emitConnectionSnapshot();
   }
 
@@ -616,6 +638,19 @@ class WebRTCManager {
       }
 
       if (signal.type === 'offer' && signal.sdp) {
+        const activeConnectionId = this.peerConnectionIds.get(fromUserId);
+        if (pc && connectionId && activeConnectionId && activeConnectionId !== connectionId) {
+          // A peer that rejoined owns a new signaling generation. Reusing the
+          // previous DTLS/ICE transport can leave its existing media black or
+          // silent, so replace it while preserving candidates for this offer.
+          const incomingCandidates = (this.pendingIceCandidates.get(fromUserId) ?? [])
+            .filter((candidate) => matchesRtcConnection(connectionId, candidate.connectionId));
+          this.removePeer(fromUserId, false);
+          if (incomingCandidates.length > 0) {
+            this.pendingIceCandidates.set(fromUserId, incomingCandidates);
+          }
+          pc = undefined;
+        }
         if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'closed')) {
           this.removePeer(fromUserId, false);
           pc = undefined;

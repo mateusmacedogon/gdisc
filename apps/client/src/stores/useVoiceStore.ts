@@ -19,6 +19,7 @@ interface DevicePreferences {
   audioInputId?: string;
   audioOutputId?: string;
   videoInputId?: string;
+  noiseSuppressionEnabled?: boolean;
 }
 
 const loadDevicePreferences = (): DevicePreferences => {
@@ -57,6 +58,7 @@ interface VoiceStoreState {
   selectedAudioInputId?: string;
   selectedAudioOutputId?: string;
   selectedVideoInputId?: string;
+  isNoiseSuppressionEnabled: boolean;
 
   joinVoice: (channelId: string, serverId: string) => Promise<void>;
   leaveVoice: () => Promise<void>;
@@ -67,6 +69,7 @@ interface VoiceStoreState {
   setAudioInput: (deviceId: string) => Promise<void>;
   setAudioOutput: (deviceId: string) => Promise<void>;
   setVideoInput: (deviceId: string) => Promise<void>;
+  setNoiseSuppression: (enabled: boolean) => Promise<void>;
   retryConnections: () => Promise<void>;
 
   // Realtime handlers
@@ -99,6 +102,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   selectedAudioInputId: initialDevicePreferences.audioInputId,
   selectedAudioOutputId: initialDevicePreferences.audioOutputId,
   selectedVideoInputId: initialDevicePreferences.videoInputId,
+  isNoiseSuppressionEnabled: initialDevicePreferences.noiseSuppressionEnabled !== false,
 
   joinVoice: async (channelId: string, serverId: string) => {
     // If currently in a channel, leave it
@@ -142,7 +146,8 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
         true,
         requestedVideo,
         get().selectedAudioInputId,
-        get().selectedVideoInputId
+        get().selectedVideoInputId,
+        get().isNoiseSuppressionEnabled,
       );
       rtcManager.toggleMute(get().isMuted);
       const videoEnabled = requestedVideo && stream.getVideoTracks().some(
@@ -314,10 +319,25 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   },
 
   setAudioInput: async (deviceId: string) => {
-    if (get().activeVoiceChannelId) {
-      const stream = await rtcManager.switchAudioInput(deviceId || undefined);
+    const activeChannelId = get().activeVoiceChannelId;
+    if (activeChannelId) {
+      const stream = await rtcManager.switchAudioInput(
+        deviceId || undefined,
+        get().isNoiseSuppressionEnabled,
+      );
       rtcManager.toggleMute(get().isMuted);
-      set({ localStream: stream });
+      set({ localStream: stream, isSpeaking: false });
+      wsClient.send(WSEvents.VOICE_STATE_UPDATE, {
+        channelId: activeChannelId,
+        isSpeaking: false,
+      });
+      vad.start(stream, (speaking) => {
+        set({ isSpeaking: speaking });
+        wsClient.send(WSEvents.VOICE_STATE_UPDATE, {
+          channelId: activeChannelId,
+          isSpeaking: speaking,
+        });
+      });
     }
     const selectedAudioInputId = deviceId || undefined;
     set({ selectedAudioInputId });
@@ -325,6 +345,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
       audioInputId: selectedAudioInputId,
       audioOutputId: get().selectedAudioOutputId,
       videoInputId: get().selectedVideoInputId,
+      noiseSuppressionEnabled: get().isNoiseSuppressionEnabled,
     });
   },
 
@@ -342,6 +363,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
       audioInputId: get().selectedAudioInputId,
       audioOutputId: selectedAudioOutputId,
       videoInputId: get().selectedVideoInputId,
+      noiseSuppressionEnabled: get().isNoiseSuppressionEnabled,
     });
   },
 
@@ -356,6 +378,37 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
       audioInputId: get().selectedAudioInputId,
       audioOutputId: get().selectedAudioOutputId,
       videoInputId: selectedVideoInputId,
+      noiseSuppressionEnabled: get().isNoiseSuppressionEnabled,
+    });
+  },
+
+  setNoiseSuppression: async (enabled: boolean) => {
+    const activeChannelId = get().activeVoiceChannelId;
+    if (activeChannelId) {
+      const stream = await rtcManager.switchAudioInput(
+        get().selectedAudioInputId,
+        enabled,
+      );
+      rtcManager.toggleMute(get().isMuted);
+      set({ localStream: stream, isSpeaking: false });
+      wsClient.send(WSEvents.VOICE_STATE_UPDATE, {
+        channelId: activeChannelId,
+        isSpeaking: false,
+      });
+      vad.start(stream, (speaking) => {
+        set({ isSpeaking: speaking });
+        wsClient.send(WSEvents.VOICE_STATE_UPDATE, {
+          channelId: activeChannelId,
+          isSpeaking: speaking,
+        });
+      });
+    }
+    set({ isNoiseSuppressionEnabled: enabled });
+    saveDevicePreferences({
+      audioInputId: get().selectedAudioInputId,
+      audioOutputId: get().selectedAudioOutputId,
+      videoInputId: get().selectedVideoInputId,
+      noiseSuppressionEnabled: enabled,
     });
   },
 
@@ -371,16 +424,9 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
       },
     }));
 
-    // Initiate WebRTC peer connections with existing members in room
-    const currentUserId = useAuthStore.getState().user?.id ?? null;
-
-    const otherPeerIds = peers
-      .filter((p) => p.userId !== currentUserId)
-      .map((p) => p.userId);
-
     if (channelId === get().activeVoiceChannelId) {
       rtcManager.syncPeerMediaStates(peers);
-      void rtcManager.syncPeers(otherPeerIds);
+      void rtcManager.syncPeers(peers);
     }
   },
 
@@ -398,7 +444,9 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
 
     if (voiceState.channelId === get().activeVoiceChannelId) {
       rtcManager.updatePeerMediaState(voiceState);
-      void rtcManager.connectToPeers([voiceState.userId]);
+      // The user that just joined creates the initial offer after Presence
+      // sync, so existing users wait here and avoid simultaneous SDP offers.
+      void rtcManager.connectToPeers([voiceState.userId], new Set());
     }
   },
 

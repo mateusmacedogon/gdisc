@@ -4,6 +4,7 @@ import {
   getRtcNegotiationRetryDelay,
   matchesRtcConnection,
   shouldInitiateRtcConnection,
+  shouldInitiateRtcConnectionForJoin,
 } from '../dist/rtcPolicy.js';
 
 test('elects exactly one RTC offerer for every peer pair', () => {
@@ -11,6 +12,28 @@ test('elects exactly one RTC offerer for every peer pair', () => {
   const second = 'f0000000-0000-0000-0000-000000000000';
   assert.equal(shouldInitiateRtcConnection(first, second), true);
   assert.equal(shouldInitiateRtcConnection(second, first), false);
+});
+
+test('elects the late joiner for the initial RTC offer', () => {
+  const existingUser = 'f0000000-0000-0000-0000-000000000000';
+  const lateJoiner = '0a000000-0000-0000-0000-000000000000';
+
+  assert.equal(
+    shouldInitiateRtcConnectionForJoin(lateJoiner, 2_000, existingUser, 1_000),
+    true,
+  );
+  assert.equal(
+    shouldInitiateRtcConnectionForJoin(existingUser, 1_000, lateJoiner, 2_000),
+    false,
+  );
+});
+
+test('falls back to stable ordering when join timestamps are equal or unavailable', () => {
+  const first = '0a000000-0000-0000-0000-000000000000';
+  const second = 'f0000000-0000-0000-0000-000000000000';
+
+  assert.equal(shouldInitiateRtcConnectionForJoin(first, 1_000, second, 1_000), true);
+  assert.equal(shouldInitiateRtcConnectionForJoin(second, undefined, first, undefined), false);
 });
 
 test('rejects delayed signals from an older connection generation', () => {
