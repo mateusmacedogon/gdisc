@@ -1,8 +1,9 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Avatar } from '../common/Avatar.js';
-import { Loader2, Maximize2, MicOff, Minimize2, Video, Monitor, Volume2, X } from 'lucide-react';
+import { Loader2, Maximize2, MicOff, Minimize2, Video, Monitor, Volume2, VolumeX, X, Sliders } from 'lucide-react';
 import type { VoiceState } from '@gdisc/shared';
+import { useVoiceStore } from '../../stores/useVoiceStore.js';
 
 interface ParticipantTileProps {
   participant: VoiceState;
@@ -77,9 +78,32 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
   const usesNativeFullscreenRef = useRef(false);
   const audioPlaybackRequestRef = useRef(0);
 
+  // Web Audio pipeline for amplifying volume up to 200%
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const destinationNodeRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isAudioBlocked, setIsAudioBlocked] = useState(false);
+  const [showVolumeSlider, setShowVolumeSlider] = useState(false);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const [, setTrackVersion] = useState(0);
+
+  const participantVolume = useVoiceStore((s) => s.participantVolumes[participant.userId] ?? 100);
+  const setParticipantVolume = useVoiceStore((s) => s.setParticipantVolume);
+
+  // Click outside to dismiss user volume popover
+  useEffect(() => {
+    if (!showVolumeSlider) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
+        setShowVolumeSlider(false);
+      }
+    };
+    document.addEventListener('pointerdown', handleClickOutside);
+    return () => document.removeEventListener('pointerdown', handleClickOutside);
+  }, [showVolumeSlider]);
 
   // Active listener on MediaStream tracks to dynamically trigger updates on track state changes
   useEffect(() => {
@@ -89,24 +113,36 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
       setTrackVersion((v) => v + 1);
     };
 
-    mediaStream.addEventListener('addtrack', handleTrackUpdate);
-    mediaStream.addEventListener('removetrack', handleTrackUpdate);
-
-    const tracks = mediaStream.getTracks();
-    tracks.forEach((track) => {
+    const bindTrack = (track: MediaStreamTrack) => {
       track.addEventListener('mute', handleTrackUpdate);
       track.addEventListener('unmute', handleTrackUpdate);
       track.addEventListener('ended', handleTrackUpdate);
-    });
+    };
+    const unbindTrack = (track: MediaStreamTrack) => {
+      track.removeEventListener('mute', handleTrackUpdate);
+      track.removeEventListener('unmute', handleTrackUpdate);
+      track.removeEventListener('ended', handleTrackUpdate);
+    };
+
+    const onAddTrack = (e: MediaStreamTrackEvent) => {
+      bindTrack(e.track);
+      handleTrackUpdate();
+    };
+    const onRemoveTrack = (e: MediaStreamTrackEvent) => {
+      unbindTrack(e.track);
+      handleTrackUpdate();
+    };
+
+    mediaStream.addEventListener('addtrack', onAddTrack);
+    mediaStream.addEventListener('removetrack', onRemoveTrack);
+
+    const tracks = mediaStream.getTracks();
+    tracks.forEach(bindTrack);
 
     return () => {
-      mediaStream.removeEventListener('addtrack', handleTrackUpdate);
-      mediaStream.removeEventListener('removetrack', handleTrackUpdate);
-      tracks.forEach((track) => {
-        track.removeEventListener('mute', handleTrackUpdate);
-        track.removeEventListener('unmute', handleTrackUpdate);
-        track.removeEventListener('ended', handleTrackUpdate);
-      });
+      mediaStream.removeEventListener('addtrack', onAddTrack);
+      mediaStream.removeEventListener('removetrack', onRemoveTrack);
+      tracks.forEach(unbindTrack);
     };
   }, [mediaStream]);
 
@@ -151,13 +187,54 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
       playbackRequest === audioPlaybackRequestRef.current
       && audioRef.current === audio
       && audio.isConnected
-      && audio.srcObject === mediaStream
     );
 
     audio.muted = muteAudio;
     audio.defaultMuted = false;
-    audio.volume = 1;
-    if (audio.srcObject !== mediaStream) audio.srcObject = mediaStream;
+
+    let targetStream = mediaStream;
+
+    // Use Web Audio GainNode for boosting volume over 100%
+    if (participantVolume > 100) {
+      try {
+        if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+          const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+          audioCtxRef.current = new AudioCtx();
+        }
+        const ctx = audioCtxRef.current;
+        if (ctx.state === 'suspended') {
+          void ctx.resume().catch(() => undefined);
+        }
+        if (!gainNodeRef.current) {
+          gainNodeRef.current = ctx.createGain();
+        }
+        gainNodeRef.current.gain.setValueAtTime(participantVolume / 100, ctx.currentTime);
+
+        if (!sourceNodeRef.current || sourceNodeRef.current.mediaStream !== mediaStream || !destinationNodeRef.current) {
+          sourceNodeRef.current?.disconnect();
+          destinationNodeRef.current?.disconnect();
+          sourceNodeRef.current = ctx.createMediaStreamSource(mediaStream);
+          const dest = ctx.createMediaStreamDestination();
+          destinationNodeRef.current = dest;
+          sourceNodeRef.current.connect(gainNodeRef.current);
+          gainNodeRef.current.connect(dest);
+        }
+        targetStream = destinationNodeRef.current ? destinationNodeRef.current.stream : mediaStream;
+        audio.volume = 1.0;
+      } catch (err) {
+        console.warn('[ParticipantTile] Web Audio boost fallback:', err);
+        targetStream = mediaStream;
+        audio.volume = 1.0;
+      }
+    } else {
+      if (gainNodeRef.current && audioCtxRef.current) {
+        gainNodeRef.current.gain.setValueAtTime(1.0, audioCtxRef.current.currentTime);
+      }
+      targetStream = mediaStream;
+      audio.volume = Math.max(0, Math.min(1, participantVolume / 100));
+    }
+
+    if (audio.srcObject !== targetStream) audio.srcObject = targetStream;
 
     const sinkAudio = audio as HTMLAudioElement & {
       setSinkId?: (deviceId: string) => Promise<void>;
@@ -185,7 +262,7 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
         setIsAudioBlocked(true);
       }
     }
-  }, [audioOutputDeviceId, hasAudioTrack, isLocal, mediaStream, muteAudio]);
+  }, [audioOutputDeviceId, hasAudioTrack, isLocal, mediaStream, muteAudio, participantVolume]);
 
   // Audio output handler. Browsers may block autoplay until the first user
   // interaction, so retry on media readiness and on the next click/key press.
@@ -201,7 +278,6 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
       return;
     }
 
-    if (audio.srcObject !== mediaStream) audio.srcObject = mediaStream;
     audio.muted = muteAudio;
     const retryPlayback = () => void playRemoteAudio();
     audio.addEventListener('canplay', retryPlayback, { once: true });
@@ -226,7 +302,23 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
       audio.pause();
       audio.srcObject = null;
     }
+    sourceNodeRef.current?.disconnect();
+    sourceNodeRef.current = null;
+    gainNodeRef.current?.disconnect();
+    gainNodeRef.current = null;
+    destinationNodeRef.current?.disconnect();
+    destinationNodeRef.current = null;
+    if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+      void audioCtxRef.current.close();
+      audioCtxRef.current = null;
+    }
   }, []);
+
+  useEffect(() => {
+    if (!isLocal) {
+      void playRemoteAudio();
+    }
+  }, [participantVolume, isLocal, playRemoteAudio]);
 
   // Escape key closes fullscreen
   useEffect(() => {
@@ -318,7 +410,7 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
           muted
           className={`w-full h-full ${
             participant.selfScreen ? 'object-contain bg-black' : 'object-cover'
-          } rounded-2xl ${hasVideoTrack ? 'block' : 'hidden'}`}
+          } ${isLocal && !participant.selfScreen ? '-scale-x-100' : ''} rounded-2xl ${hasVideoTrack ? 'block' : 'hidden'}`}
         />
 
         {/* Avatar Display when video is inactive */}
@@ -378,8 +470,8 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
           )}
         </div>
 
-        {/* Bottom Name & Audio Status Pill */}
-        <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between z-10 pointer-events-none">
+        {/* Bottom Name & Audio Status Pill + Individual Volume Slider */}
+        <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between z-10 pointer-events-auto">
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/60 backdrop-blur-md text-xs font-semibold text-gdisc-text-primary border border-white/10 shadow-md">
             {participant.selfMute ? (
               <MicOff className="w-3.5 h-3.5 text-gdisc-danger shrink-0" />
@@ -393,7 +485,65 @@ export const ParticipantTile: React.FC<ParticipantTileProps> = ({
             <span className="truncate max-w-[140px]">
               {participant.user.displayName} {isLocal && '(Você)'}
             </span>
+            {!isLocal && participantVolume !== 100 && (
+              <span className="text-[10px] text-gdisc-brand-secondary font-mono">
+                {participantVolume}%
+              </span>
+            )}
           </div>
+
+          {!isLocal && (
+            <div className="relative">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowVolumeSlider(!showVolumeSlider);
+                }}
+                title="Ajustar volume deste usuário"
+                className={`p-1.5 rounded-xl border backdrop-blur-md transition-all shadow-md ${
+                  showVolumeSlider || participantVolume !== 100
+                    ? 'bg-gdisc-brand-primary text-white border-gdisc-brand-primary'
+                    : 'bg-black/60 text-white/80 border-white/10 hover:bg-black/90'
+                }`}
+              >
+                <Sliders className="w-3.5 h-3.5" />
+              </button>
+
+              {showVolumeSlider && (
+                <div
+                  ref={popoverRef}
+                  onClick={(e) => e.stopPropagation()}
+                  className="absolute bottom-full right-0 mb-2 p-3 bg-gdisc-bg-card/95 border border-gdisc-bg-hover rounded-xl shadow-2xl backdrop-blur-md z-30 min-w-[190px] space-y-2 animate-fade-in"
+                >
+                  <div className="flex items-center justify-between text-xs font-semibold text-gdisc-text-secondary">
+                    <span>Volume do Usuário</span>
+                    <span className="text-gdisc-brand-secondary font-mono">{participantVolume}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="200"
+                    step="5"
+                    value={participantVolume}
+                    onChange={(e) => setParticipantVolume(participant.userId, parseInt(e.target.value, 10))}
+                    className="w-full h-2 bg-gdisc-bg-secondary rounded-lg appearance-none cursor-pointer accent-gdisc-brand-primary border border-gdisc-bg-hover"
+                  />
+                  <div className="flex justify-between text-[10px] text-gdisc-text-muted">
+                    <span>0%</span>
+                    <button
+                      type="button"
+                      onClick={() => setParticipantVolume(participant.userId, 100)}
+                      className="hover:text-gdisc-brand-secondary underline"
+                    >
+                      Padrão (100%)
+                    </button>
+                    <span>200%</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

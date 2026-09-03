@@ -178,12 +178,13 @@ export function setupWebSocket(fastify: FastifyInstance) {
 
         // Handle WebRTC Signaling Relay
         if (message.event === WSEvents.RTC_SIGNAL) {
-          const { targetUserId, channelId, signal } = message.data as RTCSignalPayload;
+          const { targetUserId, channelId, signal, connectionId } = message.data as RTCSignalPayload;
           voiceManager.relayRtcSignal(
             authenticatedUserId,
             targetUserId,
             channelId,
-            signal
+            signal,
+            connectionId
           );
           return;
         }

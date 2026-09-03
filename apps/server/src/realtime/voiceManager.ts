@@ -132,7 +132,8 @@ export class VoiceManager {
     fromUserId: string,
     targetUserId: string,
     channelId: string,
-    signal: any
+    signal: any,
+    connectionId?: string
   ) {
     const targetVoiceState = this.getUserVoiceState(targetUserId);
     const senderVoiceState = this.getUserVoiceState(fromUserId);
@@ -146,6 +147,7 @@ export class VoiceManager {
         fromUserId,
         targetUserId,
         channelId,
+        connectionId,
         signal,
       },
     });

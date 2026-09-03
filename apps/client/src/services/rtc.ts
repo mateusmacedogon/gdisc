@@ -15,6 +15,7 @@ import {
 } from '@gdisc/shared';
 import type { VoiceState } from '@gdisc/shared';
 import { platformCapabilities } from '../utils/platform.js';
+import { noiseSuppression, type NoiseSuppressionLevel } from './noiseSuppression.js';
 
 type ViteRuntimeEnv = Record<string, string | boolean | undefined>;
 const runtimeEnv = (import.meta as ImportMeta & { readonly env?: ViteRuntimeEnv }).env;
@@ -50,12 +51,12 @@ const RTC_CONFIG: RTCConfiguration = {
 
 export interface ScreenShareOptions {
   sourceId?: string;
-  resolution?: '720p' | '1080p' | 'original';
+  resolution?: '720p' | '1080p' | '1440p' | 'original';
   fps?: 15 | 30 | 60;
   withAudio?: boolean;
 }
 
-type RemoteStreamCallback = (peerStreams: Map<string, MediaStream>) => void;
+type RemoteStreamCallback = (peerStreams: Map<string, MediaStream>, peerScreenStreams: Map<string, MediaStream>) => void;
 
 export type CallConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'poor' | 'failed';
 export type CallConnectionQuality = 'unknown' | 'excellent' | 'good' | 'poor';
@@ -173,10 +174,12 @@ const createRtcConfiguration = async (): Promise<RTCConfiguration> => {
 
 class WebRTCManager {
   private localStream: MediaStream | null = null;
+  private rawLocalStream: MediaStream | null = null;
   private screenStream: MediaStream | null = null;
   private peerConnections: Map<string, RTCPeerConnection> = new Map();
   private remotePeerTracks: Map<string, Map<string, MediaStreamTrack>> = new Map();
   private remoteStreams: Map<string, MediaStream> = new Map();
+  private remoteScreenStreams: Map<string, MediaStream> = new Map();
   private pendingIceCandidates: Map<string, PendingIceCandidate[]> = new Map();
   private receivedIceCandidateKeys: Map<string, Set<string>> = new Map();
   private peerConnectionIds: Map<string, string> = new Map();
@@ -231,18 +234,22 @@ class WebRTCManager {
     video = false,
     audioDeviceId?: string,
     videoDeviceId?: string,
-    noiseSuppression = true,
+    noiseSuppressionLevel: NoiseSuppressionLevel = 'high',
+    echoCancellation = true,
   ): Promise<MediaStream> {
     if (!platformCapabilities.camera) {
       throw new Error('Este dispositivo não oferece acesso a microfone ou câmera neste aplicativo.');
     }
 
+    const nativeNoiseSuppression = noiseSuppressionLevel !== 'off';
     const constraints: MediaStreamConstraints = {
       audio: audio
         ? {
-            echoCancellation: true,
-            noiseSuppression,
+            echoCancellation,
+            noiseSuppression: nativeNoiseSuppression,
             autoGainControl: true,
+            channelCount: { ideal: 2 },
+            sampleRate: { ideal: 48000 },
             ...(audioDeviceId ? { deviceId: { exact: audioDeviceId } } : {}),
           }
         : false,
@@ -250,21 +257,22 @@ class WebRTCManager {
         ? {
             width: { ideal: 1280 },
             height: { ideal: 720 },
-            frameRate: { ideal: 30 },
+            frameRate: { ideal: 30, max: 30 },
+            aspectRatio: { ideal: 1.777777778 },
             ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),
           }
         : false,
     };
 
-    let nextStream: MediaStream;
+    let rawStream: MediaStream;
     try {
-      nextStream = await navigator.mediaDevices.getUserMedia(constraints);
+      rawStream = await navigator.mediaDevices.getUserMedia(constraints);
     } catch (err) {
       console.warn('[WebRTC] getUserMedia failed with requested constraints, falling back:', err);
       if (!audio) throw this.createMediaError(err, 'Não foi possível acessar a câmera.');
       try {
-        nextStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression, autoGainControl: true },
+        rawStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation, noiseSuppression: nativeNoiseSuppression, autoGainControl: true },
           video: false,
         });
       } catch (fallbackErr) {
@@ -273,27 +281,45 @@ class WebRTCManager {
       }
     }
 
+    const previousRaw = this.rawLocalStream;
+    this.rawLocalStream = rawStream;
+    previousRaw?.getTracks().forEach((track) => track.stop());
+
     const previousStream = this.localStream;
-    this.localStream = nextStream;
+    // Process audio through Web Audio DSP noise suppression engine
+    if (audio && rawStream.getAudioTracks().length > 0) {
+      this.localStream = noiseSuppression.processStream(rawStream, noiseSuppressionLevel);
+    } else {
+      noiseSuppression.cleanup();
+      this.localStream = rawStream;
+    }
+
     this.localStream.getAudioTracks().forEach((track) => { track.contentHint = 'speech'; });
     this.localStream.getVideoTracks().forEach((track) => { track.contentHint = 'motion'; });
     previousStream?.getTracks().forEach((track) => track.stop());
     await this.renegotiateAllPeers();
-    return nextStream;
+    return this.localStream;
   }
 
-  public async switchAudioInput(deviceId?: string, noiseSuppression = true): Promise<MediaStream> {
+  public async switchAudioInput(
+    deviceId?: string,
+    noiseSuppressionLevel: NoiseSuppressionLevel = 'high',
+    echoCancellation = true,
+  ): Promise<MediaStream> {
     if (!platformCapabilities.camera) {
       throw new Error('A seleção de microfone não é suportada neste dispositivo.');
     }
 
-    let stream: MediaStream;
+    const nativeNoiseSuppression = noiseSuppressionLevel !== 'off';
+    let rawStream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
+      rawStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
-          noiseSuppression,
+          echoCancellation,
+          noiseSuppression: nativeNoiseSuppression,
           autoGainControl: true,
+          channelCount: { ideal: 2 },
+          sampleRate: { ideal: 48000 },
           ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
         },
         video: false,
@@ -302,16 +328,34 @@ class WebRTCManager {
       throw this.createMediaError(error, 'Não foi possível trocar o microfone.');
     }
 
-    const nextAudioTrack = stream.getAudioTracks()[0];
+    const nextAudioTrack = rawStream.getAudioTracks()[0];
     if (!nextAudioTrack) throw new Error('O microfone selecionado não forneceu áudio.');
-    nextAudioTrack.contentHint = 'speech';
+
+    const previousRaw = this.rawLocalStream;
+    this.rawLocalStream = rawStream;
+    previousRaw?.getAudioTracks().forEach((track) => track.stop());
+
     const previousStream = this.localStream;
     previousStream?.getAudioTracks().forEach((track) => track.stop());
+
+    // Process raw stream with noise suppression
+    const processedStream = noiseSuppression.processStream(rawStream, noiseSuppressionLevel);
+    const processedAudioTrack = processedStream.getAudioTracks()[0] ?? nextAudioTrack;
+    processedAudioTrack.contentHint = 'speech';
+
     const liveVideoTracks = previousStream?.getVideoTracks()
       .filter((track) => track.readyState === 'live') ?? [];
-    this.localStream = new MediaStream([...liveVideoTracks, nextAudioTrack]);
+    this.localStream = new MediaStream([...liveVideoTracks, processedAudioTrack]);
     await this.renegotiateAllPeers();
     return this.localStream;
+  }
+
+  public setNoiseSuppressionLevel(level: NoiseSuppressionLevel): void {
+    noiseSuppression.setLevel(level);
+  }
+
+  public setMicGain(gain: number): void {
+    noiseSuppression.setInputGain(gain);
   }
 
   /**
@@ -326,22 +370,36 @@ class WebRTCManager {
 
       this.screenStream = null;
 
+      const getScreenConstraints = (res?: '720p' | '1080p' | '1440p' | 'original') => {
+        switch (res) {
+          case '720p':
+            return { width: { ideal: 1280, max: 1280 }, height: { ideal: 720, max: 720 } };
+          case '1080p':
+            return { width: { ideal: 1920, max: 1920 }, height: { ideal: 1080, max: 1080 } };
+          case '1440p':
+            return { width: { ideal: 2560, max: 2560 }, height: { ideal: 1440, max: 1440 } };
+          case 'original':
+          default:
+            return {};
+        }
+      };
+
       // In Electron desktop environment with a specific selected window or screen
       if (options?.sourceId) {
         try {
-          // Electron's main process grants the source selected in our picker
-          // and provides Windows loopback audio through this standards API.
+          const res = getScreenConstraints(options?.resolution);
           this.screenStream = await navigator.mediaDevices.getDisplayMedia({
             audio: Boolean(options.withAudio),
             video: {
-              width: { ideal: options?.resolution === '720p' ? 1280 : options?.resolution === '1080p' ? 1920 : 3840 },
-              height: { ideal: options?.resolution === '720p' ? 720 : options?.resolution === '1080p' ? 1080 : 2160 },
+              ...(res.width ? { width: res.width } : {}),
+              ...(res.height ? { height: res.height } : {}),
               frameRate: { ideal: fps, max: fps },
             },
           } as DisplayMediaStreamOptions);
         } catch (displayMediaError) {
           console.warn('[WebRTC] Electron display capture failed, trying legacy source capture:', displayMediaError);
           try {
+            const res = getScreenConstraints(options?.resolution);
             this.screenStream = await (navigator.mediaDevices as any).getUserMedia({
               audio: options.withAudio
                 ? { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: options.sourceId } }
@@ -350,8 +408,8 @@ class WebRTCManager {
                 mandatory: {
                   chromeMediaSource: 'desktop',
                   chromeMediaSourceId: options.sourceId,
-                  maxWidth: options?.resolution === '720p' ? 1280 : options?.resolution === '1080p' ? 1920 : 3840,
-                  maxHeight: options?.resolution === '720p' ? 720 : options?.resolution === '1080p' ? 1080 : 2160,
+                  maxWidth: res.width ? (res.width as any).ideal ?? 1920 : 3840,
+                  maxHeight: res.height ? (res.height as any).ideal ?? 1080 : 2160,
                   maxFrameRate: fps,
                 },
               },
@@ -365,13 +423,10 @@ class WebRTCManager {
       // Web Browser standard getDisplayMedia capture with resilient fallback
       if (!this.screenStream) {
         const tryGetDisplayMedia = async (withSysAudio: boolean): Promise<MediaStream> => {
+          const res = getScreenConstraints(options?.resolution);
           const videoConstraints: MediaTrackConstraints = {
             frameRate: { ideal: fps, max: fps },
-            ...(options?.resolution === '720p'
-              ? { width: { ideal: 1280 }, height: { ideal: 720 } }
-              : options?.resolution === '1080p'
-              ? { width: { ideal: 1920 }, height: { ideal: 1080 } }
-              : {}),
+            ...res,
           };
 
           return await navigator.mediaDevices.getDisplayMedia({
@@ -447,13 +502,23 @@ class WebRTCManager {
       return this.localStream;
     } else {
       try {
-        const videoStream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),
-          },
-        });
+        let videoStream: MediaStream;
+        try {
+          videoStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+              frameRate: { ideal: 30, max: 30 },
+              aspectRatio: { ideal: 1.777777778 },
+              ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),
+            },
+          });
+        } catch (hdErr) {
+          console.warn('[WebRTC] HD camera constraints failed, falling back to basic camera:', hdErr);
+          videoStream = await navigator.mediaDevices.getUserMedia({
+            video: videoDeviceId ? { deviceId: { exact: videoDeviceId } } : true,
+          });
+        }
 
         const newVideoTrack = videoStream.getVideoTracks()[0];
         if (newVideoTrack) {
@@ -759,6 +824,7 @@ class WebRTCManager {
     if (forget) this.peerMediaExpectations.delete(userId);
     this.remotePeerTracks.delete(userId);
     this.remoteStreams.delete(userId);
+    this.remoteScreenStreams.delete(userId);
     this.notifyRemoteStreamsChanged();
     this.emitConnectionSnapshot();
   }
@@ -790,6 +856,7 @@ class WebRTCManager {
 
     this.remotePeerTracks.clear();
     this.remoteStreams.clear();
+    this.remoteScreenStreams.clear();
     this.pendingIceCandidates.clear();
     this.receivedIceCandidateKeys.clear();
     this.peerConnectionIds.clear();
@@ -813,12 +880,84 @@ class WebRTCManager {
   }
 
   private ensureTransceivers(pc: RTCPeerConnection) {
-    const current = pc.getTransceivers();
-    if (current.length === 0) {
-      pc.addTransceiver('audio', { direction: 'sendrecv' });
-      pc.addTransceiver('audio', { direction: 'sendrecv' });
-      pc.addTransceiver('video', { direction: 'sendrecv' });
+    const audioTransceivers = pc.getTransceivers().filter((t) => t.receiver.track.kind === 'audio');
+    const videoTransceivers = pc.getTransceivers().filter((t) => t.receiver.track.kind === 'video');
+
+    // Transceiver 0 (audio): Mic, Transceiver 1 (audio): Screen Audio
+    for (let i = audioTransceivers.length; i < 2; i++) {
+      pc.addTransceiver('audio', { direction: 'recvonly' });
     }
+    // Transceiver 0 (video): Camera, Transceiver 1 (video): Screen Video
+    for (let i = videoTransceivers.length; i < 2; i++) {
+      pc.addTransceiver('video', { direction: 'recvonly' });
+    }
+  }
+
+  private updateRemoteStreamsFromPC(targetUserId: string, pc: RTCPeerConnection) {
+    if (pc.connectionState === 'closed') return;
+    const transceivers = pc.getTransceivers();
+    const audioTransceivers = transceivers.filter((t) => t.receiver.track.kind === 'audio');
+    const videoTransceivers = transceivers.filter((t) => t.receiver.track.kind === 'video');
+
+    const micTrack = audioTransceivers[0]?.receiver.track;
+    const screenAudioTrack = audioTransceivers[1]?.receiver.track;
+    const cameraTrack = videoTransceivers[0]?.receiver.track;
+    const screenVideoTrack = videoTransceivers[1]?.receiver.track;
+
+    let peerTracks = this.remotePeerTracks.get(targetUserId);
+    if (!peerTracks) {
+      peerTracks = new Map<string, MediaStreamTrack>();
+      this.remotePeerTracks.set(targetUserId, peerTracks);
+    }
+
+    // 1. Remote Camera & Mic stream
+    let remoteStream = this.remoteStreams.get(targetUserId);
+    if (!remoteStream) {
+      remoteStream = new MediaStream();
+      this.remoteStreams.set(targetUserId, remoteStream);
+    }
+    if (micTrack && !remoteStream.getAudioTracks().some((t) => t.id === micTrack.id)) {
+      remoteStream.getAudioTracks().forEach((t) => remoteStream!.removeTrack(t));
+      remoteStream.addTrack(micTrack);
+      peerTracks.set(micTrack.id, micTrack);
+    }
+    if (cameraTrack && !remoteStream.getVideoTracks().some((t) => t.id === cameraTrack.id)) {
+      remoteStream.getVideoTracks().forEach((t) => remoteStream!.removeTrack(t));
+      remoteStream.addTrack(cameraTrack);
+      peerTracks.set(cameraTrack.id, cameraTrack);
+    }
+
+    // 2. Remote Screen Share stream (Video & Audio)
+    let remoteScreen = this.remoteScreenStreams.get(targetUserId);
+    if (!remoteScreen) {
+      remoteScreen = new MediaStream();
+      this.remoteScreenStreams.set(targetUserId, remoteScreen);
+    }
+    if (screenAudioTrack && !remoteScreen.getAudioTracks().some((t) => t.id === screenAudioTrack.id)) {
+      remoteScreen.getAudioTracks().forEach((t) => remoteScreen!.removeTrack(t));
+      remoteScreen.addTrack(screenAudioTrack);
+      peerTracks.set(screenAudioTrack.id, screenAudioTrack);
+    }
+    if (screenVideoTrack && !remoteScreen.getVideoTracks().some((t) => t.id === screenVideoTrack.id)) {
+      remoteScreen.getVideoTracks().forEach((t) => remoteScreen!.removeTrack(t));
+      remoteScreen.addTrack(screenVideoTrack);
+      peerTracks.set(screenVideoTrack.id, screenVideoTrack);
+    }
+
+    // Bind mute/unmute/ended lifecycle listeners to all receiver tracks
+    const allTracks = [micTrack, screenAudioTrack, cameraTrack, screenVideoTrack];
+    for (const track of allTracks) {
+      if (track && !(track as any).__gdisc_bound) {
+        (track as any).__gdisc_bound = true;
+        track.addEventListener('mute', () => this.notifyRemoteStreamsChanged());
+        track.addEventListener('unmute', () => this.notifyRemoteStreamsChanged());
+        track.addEventListener('ended', () => {
+          this.notifyRemoteStreamsChanged();
+        });
+      }
+    }
+
+    this.notifyRemoteStreamsChanged();
   }
 
   private async createPeerConnection(targetUserId: string, isInitiator: boolean): Promise<RTCPeerConnection> {
@@ -860,42 +999,16 @@ class WebRTCManager {
       console.warn('[WebRTC] ICE candidate error:', event.url, event.errorCode, event.errorText);
     };
 
-    // Keep one MediaStream object per peer. Replacing it on every mute/unmute
-    // forces media elements to reload and interrupts pending play() calls.
-    pc.ontrack = (event) => {
-      let peerTracks = this.remotePeerTracks.get(targetUserId);
-      if (!peerTracks) {
-        peerTracks = new Map<string, MediaStreamTrack>();
-        this.remotePeerTracks.set(targetUserId, peerTracks);
-      }
-
-      peerTracks.set(event.track.id, event.track);
-      let remoteStream = this.remoteStreams.get(targetUserId);
-      if (!remoteStream) {
-        remoteStream = new MediaStream();
-        this.remoteStreams.set(targetUserId, remoteStream);
-      }
-      if (!remoteStream.getTracks().some((track) => track.id === event.track.id)) {
-        remoteStream.addTrack(event.track);
-      }
-
-      event.track.onended = () => {
-        const tracks = this.remotePeerTracks.get(targetUserId);
-        tracks?.delete(event.track.id);
-        this.remoteStreams.get(targetUserId)?.removeTrack(event.track);
-        this.notifyRemoteStreamsChanged();
-      };
-
-      event.track.onmute = () => this.notifyRemoteStreamsChanged();
-      event.track.onunmute = () => this.notifyRemoteStreamsChanged();
-
-      this.notifyRemoteStreamsChanged();
+    // Synchronize incoming remote tracks to camera and screen share streams
+    pc.ontrack = () => {
+      this.updateRemoteStreamsFromPC(targetUserId, pc);
     };
 
     // Offers requested while another offer/answer exchange is underway are
     // drained as soon as signaling becomes stable instead of being discarded.
     pc.onsignalingstatechange = () => {
       if (pc.signalingState === 'stable') {
+        this.updateRemoteStreamsFromPC(targetUserId, pc);
         this.ignoredOfferPeers.delete(targetUserId);
         void this.drainNegotiation(targetUserId);
       }
@@ -957,36 +1070,76 @@ class WebRTCManager {
 
     const micTrack = this.localStream?.getAudioTracks()[0] ?? null;
     const screenAudioTrack = this.screenStream?.getAudioTracks()[0] ?? null;
-    const activeVideoTrack = this.screenStream?.getVideoTracks()[0] ?? this.localStream?.getVideoTracks()[0] ?? null;
-    const isScreen = Boolean(this.screenStream?.getVideoTracks()[0]);
+    const cameraTrack = this.localStream?.getVideoTracks()[0] ?? null;
+    const screenVideoTrack = this.screenStream?.getVideoTracks()[0] ?? null;
 
     const transceivers = pc.getTransceivers();
     const audioTransceivers = transceivers.filter((t) => t.receiver.track.kind === 'audio');
-    const videoTransceiver = transceivers.find((t) => t.receiver.track.kind === 'video');
+    const videoTransceivers = transceivers.filter((t) => t.receiver.track.kind === 'video');
 
+    // 1. Microphone Audio (transceiver 0)
     if (audioTransceivers[0]) {
       if (audioTransceivers[0].sender.track !== micTrack) {
         await audioTransceivers[0].sender.replaceTrack(micTrack);
       }
-      audioTransceivers[0].direction = 'sendrecv';
+      audioTransceivers[0].direction = micTrack ? 'sendrecv' : 'recvonly';
+      if (micTrack) {
+        await this.tuneAudioSender(audioTransceivers[0].sender, false);
+      }
     }
 
+    // 2. Screen Share Audio (transceiver 1)
     if (audioTransceivers[1]) {
       if (audioTransceivers[1].sender.track !== screenAudioTrack) {
         await audioTransceivers[1].sender.replaceTrack(screenAudioTrack);
       }
-      audioTransceivers[1].direction = 'sendrecv';
+      audioTransceivers[1].direction = screenAudioTrack ? 'sendrecv' : 'recvonly';
+      if (screenAudioTrack) {
+        await this.tuneAudioSender(audioTransceivers[1].sender, true);
+      }
     }
 
-    if (videoTransceiver) {
-      if (videoTransceiver.sender.track !== activeVideoTrack) {
-        await videoTransceiver.sender.replaceTrack(activeVideoTrack);
-        this.senderQualityTiers.delete(videoTransceiver.sender);
+    // 3. Camera Video (transceiver 0)
+    if (videoTransceivers[0]) {
+      if (videoTransceivers[0].sender.track !== cameraTrack) {
+        await videoTransceivers[0].sender.replaceTrack(cameraTrack);
+        this.senderQualityTiers.delete(videoTransceivers[0].sender);
       }
-      videoTransceiver.direction = 'sendrecv';
-      if (activeVideoTrack) {
-        await this.tuneVideoSender(videoTransceiver.sender, isScreen, 'good');
+      videoTransceivers[0].direction = cameraTrack ? 'sendrecv' : 'recvonly';
+      if (cameraTrack) {
+        await this.tuneVideoSender(videoTransceivers[0].sender, false, 'good');
       }
+    }
+
+    // 4. Screen Share Video (transceiver 1)
+    if (videoTransceivers[1]) {
+      if (videoTransceivers[1].sender.track !== screenVideoTrack) {
+        await videoTransceivers[1].sender.replaceTrack(screenVideoTrack);
+        this.senderQualityTiers.delete(videoTransceivers[1].sender);
+      }
+      videoTransceivers[1].direction = screenVideoTrack ? 'sendrecv' : 'recvonly';
+      if (screenVideoTrack) {
+        await this.tuneVideoSender(videoTransceivers[1].sender, true, 'good');
+      }
+    }
+  }
+
+  private async tuneAudioSender(sender: RTCRtpSender, isScreenAudio: boolean): Promise<void> {
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      if (isScreenAudio) {
+        params.encodings[0].maxBitrate = 192_000;
+        params.encodings[0].networkPriority = 'high';
+      } else {
+        params.encodings[0].maxBitrate = 64_000;
+        params.encodings[0].networkPriority = 'high';
+      }
+      await sender.setParameters(params);
+    } catch {
+      // Audio parameter tuning fallback
     }
   }
 
@@ -1005,13 +1158,13 @@ class WebRTCManager {
       const constrained = quality === 'poor';
       const sourceFps = Math.max(15, Math.round(sender.track?.getSettings().frameRate ?? 30));
       if (isScreen) {
-        params.encodings[0].maxBitrate = constrained ? 1_200_000 : 3_000_000;
+        params.encodings[0].maxBitrate = constrained ? 1_500_000 : 4_500_000;
         params.encodings[0].maxFramerate = constrained ? Math.min(20, sourceFps) : Math.min(60, sourceFps);
         params.encodings[0].scaleResolutionDownBy = constrained ? 1.5 : 1;
         params.encodings[0].networkPriority = 'high';
         params.degradationPreference = 'maintain-resolution';
       } else {
-        params.encodings[0].maxBitrate = constrained ? 550_000 : 1_500_000;
+        params.encodings[0].maxBitrate = constrained ? 650_000 : 1_800_000;
         params.encodings[0].maxFramerate = constrained ? Math.min(20, sourceFps) : Math.min(30, sourceFps);
         params.encodings[0].scaleResolutionDownBy = constrained ? 2 : 1;
         params.encodings[0].networkPriority = 'medium';
@@ -1306,7 +1459,13 @@ class WebRTCManager {
 
     // Media watchdogs run on both browsers. Let a single side repair the
     // peer connection so two simultaneous recovery offers cannot collide.
-    if (!this.shouldInitiateFor(peerId)) return;
+    if (!this.shouldInitiateFor(peerId)) {
+      if (recoveryAttempt >= 2) {
+        this.removePeer(peerId, false);
+        this.scheduleReconnect(peerId);
+      }
+      return;
+    }
 
     if (recoveryAttempt === 1 && pc.connectionState === 'connected') {
       pc.restartIce();
@@ -1362,6 +1521,11 @@ class WebRTCManager {
   }
 
   private stopLocalMedia() {
+    noiseSuppression.cleanup();
+    if (this.rawLocalStream) {
+      this.rawLocalStream.getTracks().forEach((t) => t.stop());
+      this.rawLocalStream = null;
+    }
     if (this.localStream) {
       this.localStream.getTracks().forEach((t) => t.stop());
       this.localStream = null;
@@ -1370,7 +1534,7 @@ class WebRTCManager {
 
   private notifyRemoteStreamsChanged() {
     if (this.onRemoteStreamsChanged) {
-      this.onRemoteStreamsChanged(new Map(this.remoteStreams));
+      this.onRemoteStreamsChanged(new Map(this.remoteStreams), new Map(this.remoteScreenStreams));
     }
   }
 
@@ -1396,8 +1560,16 @@ class WebRTCManager {
     return this.localStream;
   }
 
+  public getRawLocalStream(): MediaStream | null {
+    return this.rawLocalStream;
+  }
+
   public getScreenStream(): MediaStream | null {
     return this.screenStream;
+  }
+
+  public getRemoteScreenStream(userId: string): MediaStream | null {
+    return this.remoteScreenStreams.get(userId) ?? null;
   }
 }
 

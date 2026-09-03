@@ -16,6 +16,7 @@ export const VoiceRoom: React.FC = () => {
     localStream,
     screenStream,
     remoteStreams,
+    remoteScreenStreams,
     isMuted,
     isDeafened,
     isVideoOn,
@@ -146,12 +147,15 @@ export const VoiceRoom: React.FC = () => {
             {/* Main Spotlight Screen */}
             <div className="min-h-[220px] flex-1 sm:min-h-[360px]">
               <ParticipantTile
-                participant={screenSharer}
+                participant={{
+                  ...screenSharer,
+                  selfScreen: true,
+                }}
                 isLocal={screenSharer.userId === user?.id}
                 mediaStream={
                   screenSharer.userId === user?.id
-                    ? screenStream || localStream
-                    : remoteStreams.get(screenSharer.userId)
+                    ? screenStream
+                    : remoteScreenStreams.get(screenSharer.userId)
                 }
                 isScreenShareSpotlight={true}
                 muteAudio={isDeafened}
@@ -159,26 +163,25 @@ export const VoiceRoom: React.FC = () => {
               />
             </div>
 
-            {/* Sidebar Strip of other participants */}
+            {/* Sidebar Strip of participants (including screen sharer's face/camera) */}
             <div className="w-full md:w-64 flex md:flex-col gap-3 overflow-x-auto md:overflow-y-auto shrink-0">
-              {allParticipants
-                .filter((p) => p.userId !== screenSharer.userId)
-                .map((p) => {
-                  const isLocal = p.userId === user?.id;
-                  const stream = isLocal ? localStream : remoteStreams.get(p.userId);
+              {allParticipants.map((p) => {
+                const isLocal = p.userId === user?.id;
+                const isSharer = p.userId === screenSharer.userId;
+                const stream = isLocal ? localStream : remoteStreams.get(p.userId);
 
-                  return (
-                    <div key={p.userId} className="h-40 w-56 shrink-0 md:w-full">
-                      <ParticipantTile
-                        participant={p}
-                        isLocal={isLocal}
-                        mediaStream={stream}
-                        muteAudio={isDeafened}
-                        audioOutputDeviceId={selectedAudioOutputId}
-                      />
-                    </div>
-                  );
-                })}
+                return (
+                  <div key={p.userId} className="h-40 w-56 shrink-0 md:w-full">
+                    <ParticipantTile
+                      participant={isSharer ? { ...p, selfScreen: false } : p}
+                      isLocal={isLocal}
+                      mediaStream={stream}
+                      muteAudio={isDeafened}
+                      audioOutputDeviceId={selectedAudioOutputId}
+                    />
+                  </div>
+                );
+              })}
             </div>
           </div>
         ) : (

@@ -27,7 +27,7 @@ export const ScreenShareModal: React.FC = () => {
   const [isLoadingSources, setIsLoadingSources] = useState(false);
 
   // Quality & Audio settings
-  const [resolution, setResolution] = useState<'720p' | '1080p' | 'original'>('1080p');
+  const [resolution, setResolution] = useState<'720p' | '1080p' | '1440p' | 'original'>('1080p');
   const [fps, setFps] = useState<15 | 30 | 60>(30);
   const [withAudio, setWithAudio] = useState(true);
   const [isStarting, setIsStarting] = useState(false);
@@ -304,8 +304,8 @@ export const ScreenShareModal: React.FC = () => {
                 <label className="text-[11px] font-semibold text-gdisc-text-muted uppercase tracking-wider block mb-1.5">
                   Resolução
                 </label>
-                <div className="grid grid-cols-3 gap-1.5 p-1 bg-gdisc-bg-secondary rounded-lg border border-gdisc-bg-hover/40">
-                  {(['720p', '1080p', 'original'] as const).map((res) => (
+                <div className="grid grid-cols-4 gap-1 p-1 bg-gdisc-bg-secondary rounded-lg border border-gdisc-bg-hover/40">
+                  {(['720p', '1080p', '1440p', 'original'] as const).map((res) => (
                     <button
                       key={res}
                       type="button"
@@ -316,7 +316,7 @@ export const ScreenShareModal: React.FC = () => {
                           : 'text-gdisc-text-secondary hover:text-gdisc-text-primary hover:bg-gdisc-bg-hover/40'
                       }`}
                     >
-                      {res === '720p' ? '720p HD' : res === '1080p' ? '1080p FHD' : 'Original'}
+                      {res === '720p' ? '720p' : res === '1080p' ? '1080p' : res === '1440p' ? '1440p' : 'Orig.'}
                     </button>
                   ))}
                 </div>
@@ -351,11 +351,14 @@ export const ScreenShareModal: React.FC = () => {
               <div className="flex items-center gap-2.5">
                 <Volume2 className="w-4 h-4 text-gdisc-brand-secondary" />
                 <div>
-                  <span className="text-xs font-semibold text-gdisc-text-primary block">
+                  <span className="text-xs font-semibold text-gdisc-text-primary flex items-center gap-1.5">
                     Compartilhar Áudio do Sistema
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-gdisc-brand-primary/20 text-gdisc-brand-secondary border border-gdisc-brand-primary/30">
+                      192 kbps Estéreo
+                    </span>
                   </span>
-                  <span className="text-[11px] text-gdisc-text-muted">
-                    Inclui sons de jogos, vídeos e aplicativos na chamada
+                  <span className="text-[11px] text-gdisc-text-muted block mt-0.5">
+                    Transmite sons de jogos, vídeos e aplicativos em estéreo de alta fidelidade
                   </span>
                 </div>
               </div>

@@ -20,6 +20,7 @@ export const CallControls: React.FC = () => {
     isVideoOn,
     isScreenSharing,
     isSpeaking,
+    noiseSuppressionLevel,
     toggleMute,
     toggleVideo,
     toggleScreenShare,
@@ -122,16 +123,22 @@ export const CallControls: React.FC = () => {
           {pendingAction === 'screen' ? <Loader2 className="h-5 w-5 animate-spin" /> : isScreenSharing ? <MonitorOff className="w-5 h-5" /> : <Monitor className="w-5 h-5" />}
         </button>
 
-        {/* Device Settings */}
+        {/* Device Settings & Noise Suppression */}
         <button
           type="button"
           onClick={() => openModal('device_settings')}
           disabled={pendingAction !== null}
-          aria-label="Configurar dispositivos de áudio e vídeo"
-          title="Configurações de Dispositivos de Áudio e Vídeo"
-          className="flex min-h-11 min-w-11 items-center justify-center bg-gdisc-bg-secondary text-gdisc-text-primary hover:bg-gdisc-bg-hover hover:text-white rounded-xl transition-all shadow-md disabled:opacity-50"
+          aria-label="Configurar dispositivos de áudio e vídeo e supressão de ruído"
+          title={`Configurações de Dispositivos e Supressão de Ruídos (${noiseSuppressionLevel === 'off' ? 'Desativada' : 'Ativa'})`}
+          className="relative flex min-h-11 min-w-11 items-center justify-center bg-gdisc-bg-secondary text-gdisc-text-primary hover:bg-gdisc-bg-hover hover:text-white rounded-xl transition-all shadow-md disabled:opacity-50"
         >
           <Sliders className="w-5 h-5" />
+          {noiseSuppressionLevel !== 'off' && (
+            <span
+              className="absolute top-2 right-2 w-2 h-2 rounded-full bg-gdisc-brand-secondary ring-2 ring-gdisc-bg-card animate-pulse"
+              title="Supressão de ruído inteligente DSP ativa"
+            />
+          )}
         </button>
 
         {/* Leave Voice Call */}

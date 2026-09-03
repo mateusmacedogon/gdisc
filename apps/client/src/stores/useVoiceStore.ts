@@ -11,6 +11,7 @@ import { useAuthStore } from './useAuthStore.js';
 import { useUIStore } from './useUIStore.js';
 import { WSEvents, type VoiceState, type UserSummary, type RTCSignalPayload } from '@gdisc/shared';
 import { platformCapabilities } from '../utils/platform.js';
+import { type NoiseSuppressionLevel } from '../services/noiseSuppression.js';
 
 const vad = new AudioActivityDetector();
 const DEVICE_PREFERENCES_KEY = 'gdisc:voice-device-preferences';
@@ -19,7 +20,11 @@ interface DevicePreferences {
   audioInputId?: string;
   audioOutputId?: string;
   videoInputId?: string;
+  noiseSuppressionLevel?: NoiseSuppressionLevel;
   noiseSuppressionEnabled?: boolean;
+  micGain?: number;
+  echoCancellation?: boolean;
+  participantVolumes?: Record<string, number>;
 }
 
 const loadDevicePreferences = (): DevicePreferences => {
@@ -39,6 +44,9 @@ const saveDevicePreferences = (preferences: DevicePreferences): void => {
 };
 
 const initialDevicePreferences = loadDevicePreferences();
+const initialNoiseLevel: NoiseSuppressionLevel =
+  initialDevicePreferences.noiseSuppressionLevel ??
+  (initialDevicePreferences.noiseSuppressionEnabled === false ? 'off' : 'high');
 
 interface VoiceStoreState {
   activeVoiceChannelId: string | null;
@@ -52,13 +60,18 @@ interface VoiceStoreState {
   localStream: MediaStream | null;
   screenStream: MediaStream | null;
   remoteStreams: Map<string, MediaStream>;
+  remoteScreenStreams: Map<string, MediaStream>;
   connectionSnapshot: CallConnectionSnapshot;
 
-  // Device selectors
+  // Device selectors & DSP Audio Settings
   selectedAudioInputId?: string;
   selectedAudioOutputId?: string;
   selectedVideoInputId?: string;
+  noiseSuppressionLevel: NoiseSuppressionLevel;
   isNoiseSuppressionEnabled: boolean;
+  micGain: number;
+  echoCancellation: boolean;
+  participantVolumes: Record<string, number>; // userId -> volume 0 to 200 (100 is normal)
 
   joinVoice: (channelId: string, serverId: string) => Promise<void>;
   leaveVoice: () => Promise<void>;
@@ -69,7 +82,11 @@ interface VoiceStoreState {
   setAudioInput: (deviceId: string) => Promise<void>;
   setAudioOutput: (deviceId: string) => Promise<void>;
   setVideoInput: (deviceId: string) => Promise<void>;
+  setNoiseSuppressionLevel: (level: NoiseSuppressionLevel) => Promise<void>;
   setNoiseSuppression: (enabled: boolean) => Promise<void>;
+  setMicGain: (gain: number) => void;
+  setEchoCancellation: (enabled: boolean) => Promise<void>;
+  setParticipantVolume: (userId: string, volume: number) => void;
   retryConnections: () => Promise<void>;
 
   // Realtime handlers
@@ -92,6 +109,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   localStream: null,
   screenStream: null,
   remoteStreams: new Map(),
+  remoteScreenStreams: new Map(),
   connectionSnapshot: {
     status: 'connecting',
     quality: 'unknown',
@@ -102,7 +120,11 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
   selectedAudioInputId: initialDevicePreferences.audioInputId,
   selectedAudioOutputId: initialDevicePreferences.audioOutputId,
   selectedVideoInputId: initialDevicePreferences.videoInputId,
-  isNoiseSuppressionEnabled: initialDevicePreferences.noiseSuppressionEnabled !== false,
+  noiseSuppressionLevel: initialNoiseLevel,
+  isNoiseSuppressionEnabled: initialNoiseLevel !== 'off',
+  micGain: initialDevicePreferences.micGain ?? 1.0,
+  echoCancellation: initialDevicePreferences.echoCancellation !== false,
+  participantVolumes: initialDevicePreferences.participantVolumes ?? {},
 
   joinVoice: async (channelId: string, serverId: string) => {
     // If currently in a channel, leave it
@@ -117,8 +139,11 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
     rtcManager.setChannel(channelId, currentUserId);
 
     // Setup listener for remote stream updates
-    rtcManager.setRemoteStreamCallback((streams) => {
-      set({ remoteStreams: new Map(streams) });
+    rtcManager.setRemoteStreamCallback((streams, screenStreams) => {
+      set({
+        remoteStreams: new Map(streams),
+        remoteScreenStreams: new Map(screenStreams),
+      });
     });
     rtcManager.setConnectionSnapshotCallback((connectionSnapshot) => {
       const previousStatus = get().connectionSnapshot.status;
@@ -147,7 +172,8 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
         requestedVideo,
         get().selectedAudioInputId,
         get().selectedVideoInputId,
-        get().isNoiseSuppressionEnabled,
+        get().noiseSuppressionLevel,
+        get().echoCancellation,
       );
       rtcManager.toggleMute(get().isMuted);
       const videoEnabled = requestedVideo && stream.getVideoTracks().some(
@@ -169,6 +195,16 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
 
       // Start Voice Activity Detection for speaking ring
       vad.start(stream, (speaking) => {
+        if (get().isMuted) {
+          if (get().isSpeaking) {
+            set({ isSpeaking: false });
+            wsClient.send(WSEvents.VOICE_STATE_UPDATE, {
+              channelId,
+              isSpeaking: false,
+            });
+          }
+          return;
+        }
         set({ isSpeaking: speaking });
         wsClient.send(WSEvents.VOICE_STATE_UPDATE, {
           channelId,
@@ -190,6 +226,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
         localStream: null,
         screenStream: null,
         remoteStreams: new Map(),
+        remoteScreenStreams: new Map(),
         isSpeaking: false,
         isVideoOn: false,
         isScreenSharing: false,
@@ -218,6 +255,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
       localStream: null,
       screenStream: null,
       remoteStreams: new Map(),
+      remoteScreenStreams: new Map(),
       isSpeaking: false,
       isVideoOn: false,
       isScreenSharing: false,
@@ -236,13 +274,14 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
     const nextMuted = !get().isMuted;
     sounds.playMute(nextMuted);
     rtcManager.toggleMute(nextMuted);
-    set({ isMuted: nextMuted });
+    set({ isMuted: nextMuted, ...(nextMuted ? { isSpeaking: false } : {}) });
 
     const channelId = get().activeVoiceChannelId;
     if (channelId) {
       wsClient.send(WSEvents.VOICE_STATE_UPDATE, {
         channelId,
         selfMute: nextMuted,
+        ...(nextMuted ? { isSpeaking: false } : {}),
       });
     }
   },
@@ -254,7 +293,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
     const nextMute = nextDeaf ? true : get().isMuted;
     rtcManager.toggleMute(nextMute);
 
-    set({ isDeafened: nextDeaf, isMuted: nextMute });
+    set({ isDeafened: nextDeaf, isMuted: nextMute, ...(nextMute ? { isSpeaking: false } : {}) });
 
     const channelId = get().activeVoiceChannelId;
     if (channelId) {
@@ -262,6 +301,7 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
         channelId,
         selfDeaf: nextDeaf,
         selfMute: nextMute,
+        ...(nextMute ? { isSpeaking: false } : {}),
       });
     }
   },
@@ -323,7 +363,8 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
     if (activeChannelId) {
       const stream = await rtcManager.switchAudioInput(
         deviceId || undefined,
-        get().isNoiseSuppressionEnabled,
+        get().noiseSuppressionLevel,
+        get().echoCancellation,
       );
       rtcManager.toggleMute(get().isMuted);
       set({ localStream: stream, isSpeaking: false });
@@ -332,6 +373,16 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
         isSpeaking: false,
       });
       vad.start(stream, (speaking) => {
+        if (get().isMuted) {
+          if (get().isSpeaking) {
+            set({ isSpeaking: false });
+            wsClient.send(WSEvents.VOICE_STATE_UPDATE, {
+              channelId: activeChannelId,
+              isSpeaking: false,
+            });
+          }
+          return;
+        }
         set({ isSpeaking: speaking });
         wsClient.send(WSEvents.VOICE_STATE_UPDATE, {
           channelId: activeChannelId,
@@ -345,7 +396,11 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
       audioInputId: selectedAudioInputId,
       audioOutputId: get().selectedAudioOutputId,
       videoInputId: get().selectedVideoInputId,
+      noiseSuppressionLevel: get().noiseSuppressionLevel,
       noiseSuppressionEnabled: get().isNoiseSuppressionEnabled,
+      micGain: get().micGain,
+      echoCancellation: get().echoCancellation,
+      participantVolumes: get().participantVolumes,
     });
   },
 
@@ -363,7 +418,11 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
       audioInputId: get().selectedAudioInputId,
       audioOutputId: selectedAudioOutputId,
       videoInputId: get().selectedVideoInputId,
+      noiseSuppressionLevel: get().noiseSuppressionLevel,
       noiseSuppressionEnabled: get().isNoiseSuppressionEnabled,
+      micGain: get().micGain,
+      echoCancellation: get().echoCancellation,
+      participantVolumes: get().participantVolumes,
     });
   },
 
@@ -378,24 +437,73 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
       audioInputId: get().selectedAudioInputId,
       audioOutputId: get().selectedAudioOutputId,
       videoInputId: selectedVideoInputId,
+      noiseSuppressionLevel: get().noiseSuppressionLevel,
       noiseSuppressionEnabled: get().isNoiseSuppressionEnabled,
+      micGain: get().micGain,
+      echoCancellation: get().echoCancellation,
+      participantVolumes: get().participantVolumes,
+    });
+  },
+
+  setNoiseSuppressionLevel: async (level: NoiseSuppressionLevel) => {
+    rtcManager.setNoiseSuppressionLevel(level);
+    set({
+      noiseSuppressionLevel: level,
+      isNoiseSuppressionEnabled: level !== 'off',
+    });
+    saveDevicePreferences({
+      audioInputId: get().selectedAudioInputId,
+      audioOutputId: get().selectedAudioOutputId,
+      videoInputId: get().selectedVideoInputId,
+      noiseSuppressionLevel: level,
+      noiseSuppressionEnabled: level !== 'off',
+      micGain: get().micGain,
+      echoCancellation: get().echoCancellation,
+      participantVolumes: get().participantVolumes,
     });
   },
 
   setNoiseSuppression: async (enabled: boolean) => {
+    await get().setNoiseSuppressionLevel(enabled ? 'high' : 'off');
+  },
+
+  setMicGain: (gain: number) => {
+    rtcManager.setMicGain(gain);
+    set({ micGain: gain });
+    saveDevicePreferences({
+      audioInputId: get().selectedAudioInputId,
+      audioOutputId: get().selectedAudioOutputId,
+      videoInputId: get().selectedVideoInputId,
+      noiseSuppressionLevel: get().noiseSuppressionLevel,
+      noiseSuppressionEnabled: get().isNoiseSuppressionEnabled,
+      micGain: gain,
+      echoCancellation: get().echoCancellation,
+      participantVolumes: get().participantVolumes,
+    });
+  },
+
+  setEchoCancellation: async (enabled: boolean) => {
+    set({ echoCancellation: enabled });
     const activeChannelId = get().activeVoiceChannelId;
     if (activeChannelId) {
       const stream = await rtcManager.switchAudioInput(
         get().selectedAudioInputId,
+        get().noiseSuppressionLevel,
         enabled,
       );
       rtcManager.toggleMute(get().isMuted);
       set({ localStream: stream, isSpeaking: false });
-      wsClient.send(WSEvents.VOICE_STATE_UPDATE, {
-        channelId: activeChannelId,
-        isSpeaking: false,
-      });
       vad.start(stream, (speaking) => {
+        if (get().isMuted) {
+          if (get().isSpeaking) {
+            set({ isSpeaking: false });
+            wsClient.send(WSEvents.VOICE_STATE_UPDATE, {
+              channelId: activeChannelId,
+              isSpeaking: false,
+            });
+          }
+          return;
+        }
         set({ isSpeaking: speaking });
         wsClient.send(WSEvents.VOICE_STATE_UPDATE, {
           channelId: activeChannelId,
@@ -403,12 +511,30 @@ export const useVoiceStore = create<VoiceStoreState>((set, get) => ({
         });
       });
     }
-    set({ isNoiseSuppressionEnabled: enabled });
     saveDevicePreferences({
       audioInputId: get().selectedAudioInputId,
       audioOutputId: get().selectedAudioOutputId,
       videoInputId: get().selectedVideoInputId,
-      noiseSuppressionEnabled: enabled,
+      noiseSuppressionLevel: get().noiseSuppressionLevel,
+      noiseSuppressionEnabled: get().isNoiseSuppressionEnabled,
+      micGain: get().micGain,
+      echoCancellation: enabled,
+      participantVolumes: get().participantVolumes,
+    });
+  },
+
+  setParticipantVolume: (userId: string, volume: number) => {
+    const next = { ...get().participantVolumes, [userId]: volume };
+    set({ participantVolumes: next });
+    saveDevicePreferences({
+      audioInputId: get().selectedAudioInputId,
+      audioOutputId: get().selectedAudioOutputId,
+      videoInputId: get().selectedVideoInputId,
+      noiseSuppressionLevel: get().noiseSuppressionLevel,
+      noiseSuppressionEnabled: get().isNoiseSuppressionEnabled,
+      micGain: get().micGain,
+      echoCancellation: get().echoCancellation,
+      participantVolumes: next,
     });
   },
 

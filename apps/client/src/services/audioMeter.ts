@@ -22,6 +22,10 @@ export class AudioActivityDetector {
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       this.audioContext = new AudioCtx();
+      if (this.audioContext.state === 'suspended') {
+        void this.audioContext.resume().catch(() => undefined);
+      }
+
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = 512;
       this.analyser.smoothingTimeConstant = 0.4;
@@ -33,6 +37,25 @@ export class AudioActivityDetector {
 
       const checkAudio = () => {
         if (!this.analyser) return;
+
+        // If audioContext suspended, attempt resume
+        if (this.audioContext && this.audioContext.state === 'suspended') {
+          void this.audioContext.resume().catch(() => undefined);
+        }
+
+        // If all audio tracks are muted or disabled, treat as absolute silence
+        const hasLiveActiveAudio = stream
+          .getAudioTracks()
+          .some((track) => track.enabled && track.readyState === 'live');
+
+        if (!hasLiveActiveAudio) {
+          if (this.isSpeaking) {
+            this.isSpeaking = false;
+            this.onSpeakingChange?.(false);
+          }
+          this.animationFrameId = requestAnimationFrame(checkAudio);
+          return;
+        }
 
         this.analyser.getByteFrequencyData(buffer);
 
@@ -56,7 +79,7 @@ export class AudioActivityDetector {
           }
         } else {
           if (this.isSpeaking && !this.silenceTimer) {
-            // Keep active for 400ms after last loud frame to avoid flickering
+            // Keep active for 350ms after last loud frame to avoid flickering
             this.silenceTimer = setTimeout(() => {
               this.isSpeaking = false;
               this.onSpeakingChange?.(false);
